@@ -83,7 +83,7 @@ class TimeGrnularity(Enum):
     minutes  = 3
 
 class NormalizationMethod(Enum):
-    RegL2Norm = 1
+    RegL2Norm = 1 # seems to give very bad results
     StandardScaler = 2
     simple = 3
 
@@ -152,13 +152,20 @@ class Config_model:
         Network_Params.feature_num = len(self.feature_list)
 
 def ConstructTestData(df, model_params):
+    logging.debug("ConstructTestData : ")
+    logging.debug("pre normalization df : ")
+    logging.debug(df.head())
 
-#normalize all the features - TODO - add normalization options?
+    #normalize all the features - TODO - add normalization options?
     if model_params.normalization_method==NormalizationMethod.StandardScaler:
         # Create the Scaler object
+
         scaler = preprocessing.StandardScaler()
         std_scale = scaler.fit(df)
-        df = std_scale.transform(df)
+        array_normalize = std_scale.transform(df)
+        df_normalize    = pd.DataFrame(array_normalize,columns = df.columns.values)
+        print(df_normalize)
+        df = df_normalize
 
         #for column in df.columns:
         # Fit your data on the scaler object
@@ -168,10 +175,14 @@ def ConstructTestData(df, model_params):
     elif model_params.normalization_method==NormalizationMethod.RegL2Norm:
         for column in df.columns:
         #x_array = np.array(FullFeaturesDF[column])
-            df[column] = preprocessing.normalize(df[column], norm='l2')
+            df_col_reshape = df[column].values.reshape(-1, 1)
+            df[column] = preprocessing.normalize(df_col_reshape, norm='l2')
         #my_df = my_df.join(df_temp[feature])
     else:
-        FullFeaturesDF = df/df.ix[0] #executed in c lower level while a loop on all symbols executed in higher levels
+        df = df/df.ix[0] #executed in c lower level while a loop on all symbols executed in higher levels
+
+    logging.debug("post normalization df : ")
+    logging.debug(df.head())
 
     features_num = model_params.feature_num
 
@@ -233,6 +244,10 @@ def ConstructTestData(df, model_params):
     x_ho_data = x_batches[train_data_length:]
     y_ho_data = y_batches[train_data_length:]
 
+    y_raw = y_data.reshape(-1,1)
+    logging.debug("y_raw shape is: " + str(y_raw.shape))
+    logging.info(y_raw)
+
     logging.debug("x_train shape is: " + str(x_train.shape))
     logging.info(x_train)
     logging.debug("y_train shape is: " + str(y_train.shape))
@@ -247,10 +262,10 @@ def ConstructTestData(df, model_params):
         x_train = x_train,
         y_train = y_train,
         x_ho_data = x_ho_data,
-        y_ho_data = y_ho_data
+        y_ho_data = y_ho_data,
+        y_raw = y_raw
     )
-
-def TrainClassifierWrapper(x_train,y_train,model_params,file_path,classifer):
+def TrainSimpleRNN(x_train,y_train,model_params,file_path):
     #print(x_train)
     #print(y_train)
     train_dataset = CreateDataset(x_train,y_train)
@@ -258,16 +273,60 @@ def TrainClassifierWrapper(x_train,y_train,model_params,file_path,classifer):
     train_loader = DataLoader(dataset=train_dataset, batch_size=model_params.batch_size, shuffle=False, num_workers=1)
 
     input_size  = x_train.shape[1]
+    train_size  = x_train.shape[0]
     hidden_size = model_params.hidden_layer_size
     output_size = y_train.shape[1]
 
-    classifer(train_loader,
+    #rnn_clf = classifer(learning_rate = 0.01, batch_size = 128,
+    #          parallel = False, debug = False)
+
+    SimpleRNN.Train(input_size, hidden_size, output_size,train_loader,file_path,model_params.learning_rate,model_params.num_epochs)
+
+def PredictSimpleRNN(x_test,y_test,model_params,file_path):
+    print("hello from PredictSimpleRnn")
+    test_dataset = CreateDataset(x_test,y_test)
+    test_loader = DataLoader(dataset=test_dataset, batch_size=model_params.batch_size, shuffle=False, num_workers=0)
+
+    input_size  = x_test.shape[1]
+    hidden_size = model_params.hidden_layer_size
+    output_size = y_test.shape[1]
+
+    model = RnnSimpleModel(input_size = input_size, rnn_hidden_size = hidden_size, output_size = output_size)
+
+    #rnn_clf = classifer()
+    #load traind model
+    try:
+        model.load_state_dict(torch.load(file_path))
+    except:
+        print("error!! didn't find trained model")
+
+    loss_fn = GeneralModelFn.loss_fn
+    metrics = GeneralModelFn.metrics
+
+    labels_prediction_total, evaluation_summary = SimpleRNN.Predict(model,loss_fn,test_loader, metrics, cuda = model_params.use_cuda)
+    return (labels_prediction_total)
+
+def TrainClassifierWrapper(x_train,y_train,y_raw,model_params,file_path,classifer):
+    #print(x_train)
+    #print(y_train)
+    train_dataset = CreateDataset(x_train,y_train)
+    #print("train data size is: " + str(train_dataset.len))
+    train_loader = DataLoader(dataset=train_dataset, batch_size=model_params.batch_size, shuffle=False, num_workers=1)
+
+    input_size  = x_train.shape[1]
+    train_size  = x_train.shape[0]
+    hidden_size = model_params.hidden_layer_size
+    output_size = y_train.shape[1]
+
+    clf = classifer(train_size,input_size,x_train,y_train,
+                    #train_loader,
               encoder_hidden_size = hidden_size,
-              decoder_hidden_size = hidden_size, T = 10,
+              decoder_hidden_size = hidden_size, T = model_params.num_of_periods,
               learning_rate = 0.01, batch_size = 128,
               parallel = False, debug = False)
 
-    classifer.Train(num_epochs = model_params.num_epochs)
+
+    clf.Train(num_epochs = model_params.num_epochs,y_raw = y_raw)
 
 def PredictClassifierWrapper(x_test,y_test,model_params,file_path,classifer,general_model):
     print("hello from PredictSimpleRnn")
@@ -280,6 +339,12 @@ def PredictClassifierWrapper(x_test,y_test,model_params,file_path,classifer,gene
 
     model = general_model(input_size, hidden_size, output_size)
 
+    clf = classifer(input_size,input_size,x_test,y_test,
+                    #train_loader,
+              encoder_hidden_size = hidden_size,
+              decoder_hidden_size = hidden_size, T = 10,
+              learning_rate = 0.01, batch_size = 128,
+              parallel = False, debug = False)
     #load traind model
     try:
         model.load_state_dict(torch.load(file_path))
@@ -289,7 +354,7 @@ def PredictClassifierWrapper(x_test,y_test,model_params,file_path,classifer,gene
     loss_fn = GeneralModelFn.loss_fn
     metrics = GeneralModelFn.metrics
 
-    labels_prediction_total, evaluation_summary = classifer.Predict(model,loss_fn,test_loader, metrics, cuda = model_params.use_cuda)
+    labels_prediction_total, evaluation_summary = clf.Predict(model,loss_fn,test_loader, metrics, cuda = model_params.use_cuda)
     return (labels_prediction_total)
 
 def RunNetworkArch(df, model_params):
@@ -299,19 +364,19 @@ def RunNetworkArch(df, model_params):
 
     if (model_params.train_needed==True):
         if model_params.network_model==NetworkModel.simpleRNN:
-            rnn_classifier = SimpleRNN()
-            rnn_model      = RnnSimpleModel()
-            TrainClassifierWrapper(Data['x_train'],Data['y_train'],model_params,file_path,rnn_classifier)
-            y_pred = PredictClassifierWrapper(Data['x_ho_data'],Data['y_ho_data'],model_params,file_path,rnn_classifier,rnn_model)
+            rnn_classifier = SimpleRNN
+            rnn_model      = RnnSimpleModel
+            TrainSimpleRNN(Data['x_train'],Data['y_train'],model_params,file_path)
+            y_pred = PredictSimpleRNN(Data['x_ho_data'],Data['y_ho_data'],model_params,file_path)
 
         elif model_params.network_model==NetworkModel.simpleLSTM:
-            lstm_classifier = SimpleRNN() #TODO - change to simple LSTM
-            lstm_model      = RnnSimpleModel()
+            lstm_classifier = SimpleRNN #TODO - change to simple LSTM
+            lstm_model      = RnnSimpleModel
             TrainClassifierWrapper(Data['x_train'],Data['y_train'],model_params,file_path,lstm_classifier)
             y_pred = PredictClassifierWrapper(Data['x_ho_data'],Data['y_ho_data'],model_params,file_path,lstm_classifier,lstm_model)
         elif model_params.network_model==NetworkModel.DualLstmAttn:
             lstm_attn_classifier = da_rnn
-            TrainClassifierWrapper(Data['x_train'],Data['y_train'],model_params,file_path,lstm_attn_classifier)
+            TrainClassifierWrapper(Data['x_train'],Data['y_train'],Data['y_raw'],model_params,file_path,lstm_attn_classifier)
             #TODO - need to change the predict to be with the loaders
             #dual_lstm_model = da_rnn()
             #y_pred = PredictClassifierWrapper(Data['x_ho_data'],Data['y_ho_data'],model_params,file_path,lstm_attn_classifier , dual_lstm_model)
@@ -320,7 +385,7 @@ def RunNetworkArch(df, model_params):
         print("error - we shouldnt call it when no training is needed")
 
     logging.debug("y_pred shape is: " + str(len(y_pred)))
-    logging.debug(y_pred.head())
+    logging.debug(y_pred[0:5])
 
    # tf.reset_default_graph()
    # y_pred_LSTM = ConstructNetworkArch_LSTM(model_params)
@@ -475,12 +540,12 @@ if __name__ == '__main__':# needed due to: https://github.com/pytorch/pytorch/is
     config_net_default.hidden_layer_size    = 50
     config_net_default.num_epochs           = 3 #i think 30 may be optimal
     config_net_default.prediction_method    = PredictionMethod.close
-    config_net_default.normalization_method = NormalizationMethod.simple#NormalizationMethod.RegL2Norm  #StandardScaler
+    config_net_default.normalization_method = NormalizationMethod.StandardScaler
     config_net_default.batch_size           = 64
     config_net_default.train_needed         = True #True False
     config_net_default.use_cuda             = USE_CUDA
     config_net_default.train_data_precentage  = 0.7
-    config_net_default.network_model        = NetworkModel.DualLstmAttn
+    config_net_default.network_model        = NetworkModel.simpleRNN #DualLstmAttn
 
     config_model_default = Config_model
 

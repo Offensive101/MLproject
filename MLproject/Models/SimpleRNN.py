@@ -166,7 +166,7 @@ def Train(input_size, hidden_size, output_size, train_loader,file_path,learning_
     logging.info("epoch_step_time: ")
     logging.info(epoch_step_time)
 
-def predict(model,loss_fn, test_loader,metrics,cuda=False):
+def Predict(model,loss_fn, test_loader,metrics,cuda=False):
     """Evaluate the model on `num_steps` batches.
     Args:
         model: (torch.nn.Module) the neural network
