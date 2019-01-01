@@ -1,0 +1,6 @@
+INFO - ****************** FeatureBuilderMain : MLNX*******************
+DEBUG - Starting new HTTPS connection (1): api.iextrading.com:443
+DEBUG - https://api.iextrading.com:443 "GET /1.0/stock/market/batch?symbols=SPY&types=chart&range=5y HTTP/1.1" 200 None
+DEBUG - Starting new HTTPS connection (1): api.iextrading.com:443
+DEBUG - https://api.iextrading.com:443 "GET /1.0/stock/market/batch?symbols=MLNX&types=chart&range=5y HTTP/1.1" 200 None
+DEBUG - feature_num: 4
