@@ -1,9 +1,8 @@
 '''
-Created on Nov 11, 2018
+Created on Jan 1, 2019
 
 @author: mofir
 '''
-
 import torch
 from torch.autograd import Variable
 import torch.nn as nn
@@ -17,31 +16,19 @@ import numpy as np
 from utils.loggerinitializer import *
 
 
-class RnnSimpleModel(nn.Module):
+class LstmSimpleModel(nn.Module):
 
     def __init__(self, input_size, rnn_hidden_size, output_size):
 
-        super(RnnSimpleModel, self).__init__()
+        super(LstmSimpleModel, self).__init__()
 
-        self.rnn = nn.RNN(input_size, rnn_hidden_size,
-                                num_layers=2, nonlinearity='relu',
-                                batch_first=True)
-        self.h_0 = self.initialize_hidden(rnn_hidden_size)
-
-        self.linear = nn.Linear(rnn_hidden_size, output_size)
+        self.lstm = ...#TODO - COMPLETE
 
     def forward(self, x):
 
         x = x.unsqueeze(0)
-        self.rnn.flatten_parameters()
-        out, self.h_0 = self.rnn(x, self.h_0)
+        self.lstm.flatten_parameters()
 
-        out = self.linear(out)
-
-        # third_output = self.relu(self.linear3(second_output))
-        # fourth_output = self.relu(self.linear4(third_output))
-        # output = self.rnn(lineared_output)
-        # output = self.dropout(output)
         return out
 
     def initialize_hidden(self, rnn_hidden_size):
@@ -166,7 +153,7 @@ def Train(input_size, hidden_size, output_size, train_loader,file_path,learning_
     logging.info("epoch_step_time: ")
     logging.info(epoch_step_time)
 
-def predict(model,loss_fn, test_loader,metrics,cuda=False):
+def Evaluate(model,loss_fn, test_loader,metrics,cuda=False):
     """Evaluate the model on `num_steps` batches.
     Args:
         model: (torch.nn.Module) the neural network
@@ -246,8 +233,10 @@ def loss_fn(outputs, labels):
         labels: (Variable) dimension batch_size, where each element is a value in [0, 1, 2, 3, 4, 5]
     Returns:
         loss (Variable): cross entropy loss for all images in the batch
-    Note: you may use a standard loss function from http://pytorch.org/docs/master/nn.html#loss-functions. This example
-          demonstrates how you can easily define a custom loss function.
+    Note: we want to punish FP more as the loss value was higher
     """
+
+
+
     num_examples = outputs.size()[0]
     return -torch.sum(outputs[range(num_examples), labels])/num_examples

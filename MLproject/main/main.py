@@ -15,7 +15,7 @@ import torch
 #    import torch.cuda as t
 #else:
 #    import torch as t
-
+#dsdf
 from torch.jit import script, trace
 import torch.nn as nn
 from torch import optim
@@ -58,8 +58,9 @@ from utils.loggerinitializer import *
 import Statistics.CalculateStats as CalculateStats
 from Statistics.CalculateStats import CalculateAllStatistics as CalcSt
 
-from Models import SimpleRNN
+from Models import SimpleRNN, Dual_Lstm_Attn
 from Models.SimpleRNN import RnnSimpleModel
+from Models.Dual_Lstm_Attn import da_rnn
 
 from Models import GeneralModelFn
 from FeatureBuilder.FeatureBuilderMain import FeatureBuilderMain
@@ -84,16 +85,23 @@ class TimeGrnularity(Enum):
 class NormalizationMethod(Enum):
     RegL2Norm = 1
     StandardScaler = 2
+    simple = 3
 
 class PredictionMethod(Enum):
     close = 1
     slope = 2 #for it to work - need to change the TF output to be a binary 0/1 with probabilities, see here:https://stackoverflow.com/questions/40432118/tensorflow-mlp-example-outputs-binary-instead-of-decimal
     high  = 3
 
+class NetworkModel(Enum):
+    simpleRNN = 1
+    simpleLSTM = 2
+    DualLstmAttn = 3
+
 class Network_Params:
-    def __init__(self, x_period_length, y_period_length,hidden_layer_size,learning_rate,network_df,num_epochs,batch_size,use_cuda,train_needed):
+    def __init__(self, x_period_length, y_period_length,train_data_precentage,hidden_layer_size,learning_rate,network_df,num_epochs,batch_size,use_cuda,train_needed,network_model):
         self.x_period_length      = x_period_length
         self.y_period_length      = y_period_length
+        self.train_data_precentage = train_data_precentage
         self.hidden_layer_size    = hidden_layer_size
         self.learning_rate        = learning_rate
         self.feature_num          = 1
@@ -105,6 +113,7 @@ class Network_Params:
         self.use_cuda             = use_cuda
         self.train_needed         = train_needed
         self.df                   = network_df
+        self.network_model        = network_model
 
 ################################################################################
 ################################################################################
@@ -172,6 +181,8 @@ def ConstructTestData(df, model_params):
     features_array = np.asarray(df)
     x_data = features_array[:-1]
     if (model_params.prediction_method == PredictionMethod.close):
+        print("ConstructTestData: close method")
+        print(df['close'])
         y_data = (np.asarray(df['close'])[1:])
     elif (model_params.prediction_method ==  PredictionMethod.slope):
         increase_value = (np.asarray((df['close'])[1:])) > ((np.asarray(df['close'])[0:-1]))
@@ -193,7 +204,7 @@ def ConstructTestData(df, model_params):
     x_batches = GetShiftingWindows(x_data,step_size=1,window_width=num_of_periods)
 
     logging.debug("x_batch size: " + str(x_batches.shape))
-    logging.debug(x_batches)#TODO- need to see it looks as i expect
+    logging.info(x_batches)#TODO- need to see it looks as i expect
 
     y_data = y_data[:y_round_len]
     #y_batches = y_data.reshape(-1,num_of_periods,1) # in y we only have 1 feature which is the forecast
@@ -201,7 +212,7 @@ def ConstructTestData(df, model_params):
     y_batches = y_batches.reshape(-1,1)
 
     logging.debug("y_batch size: " + str(y_batches.shape))
-    logging.debug(y_batches)
+    logging.info(y_batches)
 
      #  x_batches = x_batches[:-1]
 
@@ -210,7 +221,7 @@ def ConstructTestData(df, model_params):
 
     #split to test and train data
 
-    train_data_precentage = 0.7
+    train_data_precentage = model_params.train_data_precentage
     x_batch_rows = x_round_len - (num_of_periods - 1)
 
     train_data_length = int(train_data_precentage * x_batch_rows)
@@ -223,13 +234,13 @@ def ConstructTestData(df, model_params):
     y_ho_data = y_batches[train_data_length:]
 
     logging.debug("x_train shape is: " + str(x_train.shape))
-    logging.debug(x_train)
+    logging.info(x_train)
     logging.debug("y_train shape is: " + str(y_train.shape))
 
     logging.debug("x_ho shape is: " + str(len(x_ho_data)))
-    logging.debug(x_ho_data)
+    logging.info(x_ho_data)
     logging.debug("y_ho shape is: " + str(len(y_ho_data)))
-    logging.debug(y_ho_data)
+    logging.info(y_ho_data)
 
 
     return dict(
@@ -239,7 +250,7 @@ def ConstructTestData(df, model_params):
         y_ho_data = y_ho_data
     )
 
-def TrainSimpleRnn(x_train,y_train,model_params,file_path):
+def TrainClassifierWrapper(x_train,y_train,model_params,file_path,classifer):
     #print(x_train)
     #print(y_train)
     train_dataset = CreateDataset(x_train,y_train)
@@ -250,10 +261,15 @@ def TrainSimpleRnn(x_train,y_train,model_params,file_path):
     hidden_size = model_params.hidden_layer_size
     output_size = y_train.shape[1]
 
-    SimpleRNN.Train(input_size, hidden_size, output_size, train_loader,file_path,learning_rate=model_params.learning_rate,num_epochs = model_params.num_epochs)
+    classifer(train_loader,
+              encoder_hidden_size = hidden_size,
+              decoder_hidden_size = hidden_size, T = 10,
+              learning_rate = 0.01, batch_size = 128,
+              parallel = False, debug = False)
 
+    classifer.Train(num_epochs = model_params.num_epochs)
 
-def PredictSimpleRnn(x_test,y_test,model_params,file_path):
+def PredictClassifierWrapper(x_test,y_test,model_params,file_path,classifer,general_model):
     print("hello from PredictSimpleRnn")
     test_dataset = CreateDataset(x_test,y_test)
     test_loader = DataLoader(dataset=test_dataset, batch_size=model_params.batch_size, shuffle=False, num_workers=0)
@@ -262,7 +278,7 @@ def PredictSimpleRnn(x_test,y_test,model_params,file_path):
     hidden_size = model_params.hidden_layer_size
     output_size = y_test.shape[1]
 
-    model = RnnSimpleModel(input_size, hidden_size, output_size)
+    model = general_model(input_size, hidden_size, output_size)
 
     #load traind model
     try:
@@ -273,183 +289,38 @@ def PredictSimpleRnn(x_test,y_test,model_params,file_path):
     loss_fn = GeneralModelFn.loss_fn
     metrics = GeneralModelFn.metrics
 
-    labels_prediction_total, evaluation_summary = SimpleRNN.Evaluate(model,loss_fn,test_loader, metrics, cuda = model_params.use_cuda)
+    labels_prediction_total, evaluation_summary = classifer.Predict(model,loss_fn,test_loader, metrics, cuda = model_params.use_cuda)
     return (labels_prediction_total)
 
-def TfLSTM_RNN(_X, _weights, _biases,features_num,num_of_periods,hidden):
-    # Function returns a tensorflow LSTM (RNN) artificial neural network from given parameters.
-    # Moreover, two LSTM cells are stacked which adds deepness to the neural network.
-
-    # (NOTE: This step could be greatly optimised by shaping the dataset once
-    # input shape: (batch_size, n_steps, n_input)
-    #_X = tf.transpose(_X, [1, 0, 2])  # permute n_steps and batch_size
-    # Reshape to prepare input to hidden activation
-    #_X = tf.reshape(_X, [-1, features_num])
-    # new shape: (n_steps*batch_size, n_input)
-
-    # Linear activation
- #   _X = tf.nn.relu(_X)
-    # Split data because rnn cell needs a list of inputs for the RNN inner loop
-    #_X = tf.split(_X, num_of_periods*features_num, 0)
-    # new shape: n_steps * (batch_size, n_hidden)
-
-    # Define two stacked LSTM cells (two recurrent layers deep) with tensorflow
-    lstm_cell_1 = tf.contrib.rnn.BasicLSTMCell(hidden, forget_bias=1.0, state_is_tuple=True, activation=tf.nn.relu)
-    lstm_cell_2 = tf.contrib.rnn.BasicLSTMCell(hidden, forget_bias=1.0, state_is_tuple=True, activation=tf.nn.relu)
-    lstm_cells = tf.contrib.rnn.MultiRNNCell([lstm_cell_1, lstm_cell_2], state_is_tuple=True)
-    # Get LSTM cell output TODO - why static rnn?
-    outputs, states = tf.nn.dynamic_rnn(lstm_cells,_X,dtype=tf.float32) #tf.contrib.rnn.static_rnn(lstm_cells, _X, dtype=tf.float32)
-    #
-
-    # Get last time step's output feature for a "many to one" style classifier,
-    # as in the image describing RNNs at the top of this page
-    lstm_last_output = outputs[-num_of_periods]
-    print(outputs)
-
-    # Linear activation
-    return outputs,lstm_last_output     #tf.matmul(lstm_last_output, _weights['out']) + _biases['out']
-
-def TfConstructNetworkArch_LSTM(model_params):
-    # Training
-
-    learning_rate = 0.001
-    lambda_loss_amount = 0.0015
-    training_iters = 1000  # Loop 300 times on the dataset
-    batch_size = 1500
-    display_iter = 30000  # To show test set accuracy during training
-
-    num_of_periods = model_params.num_of_periods
-    features_num = model_params.feature_num
-
-    # Graph input/output
-    x = tf.placeholder(tf.float32, [None, num_of_periods*features_num,1])
-    y = tf.placeholder(tf.float32, [None, num_of_periods, 1])
-
-    hidden = 100
-
-# Graph weights
-    weights = {
-        'hidden': tf.Variable(tf.random_uniform([features_num, hidden], minval=0.01)), # Hidden layer weights
-        'out': tf.Variable(tf.random_uniform([hidden, num_of_periods], minval=0.01))
-        }
-    biases = {
-        'hidden': tf.Variable(tf.random_normal([hidden])),
-        'out': tf.Variable(tf.random_normal([num_of_periods]))
-    }
-
-    rnn_output,pred_lstm = LSTM_RNN(x, weights, biases,features_num,num_of_periods,hidden)
-
-    stacked_rnn_output = tf.reshape(rnn_output, [-1,hidden])
-    print("stacked_rnn_output: ")
-    print(stacked_rnn_output)
-
-    stacked_outputs    = tf.layers.dense(stacked_rnn_output, 1)
-    print("stacked_outputs: ")
-    print(stacked_outputs)
-
-    stacked_outputs = tf.shape(tf.squeeze(stacked_outputs))
-
-    outputs = tf.reshape(stacked_outputs, [-1,num_of_periods,rnn_output])
-
-    # Loss, optimizer and evaluation
-    #l2 = lambda_loss_amount * sum(
-    #tf.nn.l2_loss(tf_var) for tf_var in tf.trainable_variables()
-   #) # L2 loss prevents this overkill neural network to overfit the data
-    #tf.reshape(y,[-1,num_of_periods])
-    #cost = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=y, logits=outputs)) + l2 # Softmax loss
-    #optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(cost) # Adam Optimizer
-    #training_op = optimizer
-
-    cost = tf.reduce_sum(tf.square(outputs - y))
-    optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate)
-    training_op = optimizer.minimize(cost)
-
-    # Launch the graph
-    sess = tf.InteractiveSession(config=tf.ConfigProto(log_device_placement=True))
-    init = tf.global_variables_initializer()
-    sess.run(init)
-
-    with tf.Session() as sess:
-        init.run()
-        for ep in range(training_iters):
-            sess.run(training_op, feed_dict={x: x_train,y: y_train})
-            if ep % 100 == 0:
-                mse = cost.eval(feed_dict = {x: x_train,y: y_train})
-                #print(ep,"\tMSE:",mse)
-        y_pred = sess.run(outputs,feed_dict={x: x_ho_data})
-
-    return y_pred
-
-def TfConstructNetworkArch_Simple(model_params):
-    num_of_periods = model_params.num_of_periods
-    features_num   = model_params.feature_num
-    learning_rate  = model_params.learning_rate
-    hidden         = model_params.hidden_layer_size
-
-    ##create the tensor flow model
-    inputs = 1
-    output = 1
-    x = tf.placeholder(tf.float32, [None,num_of_periods, features_num])
-    y = tf.placeholder(tf.float32, [None,num_of_periods, output])
-
-    basic_cell = tf.contrib.rnn.BasicRNNCell(num_units=hidden, activation=tf.nn.relu)
-    init_state = basic_cell.zero_state(num_of_periods*features_num, tf.float32)
-    rnn_output, final_state = tf.nn.dynamic_rnn(basic_cell,x,dtype=tf.float32)#, initial_state=init_state)
-
-    stacked_rnn_output = tf.reshape(rnn_output, [-1,hidden])
-    stacked_outputs    = tf.layers.dense(stacked_rnn_output, output)
-    outputs = tf.reshape(stacked_outputs, [-1,num_of_periods,output])
-
-    #print(outputs)
-    #print(y)
-
-    loss        = tf.reduce_sum(tf.square(outputs - y))
-    optimizer   = tf.train.AdamOptimizer(learning_rate=learning_rate)
-    training_op = optimizer.minimize(loss)
-
-    return dict(
-        x = x,
-        y = y,
-        init_state  = init_state,
-        final_state = final_state,
-        outputs     = outputs,
-        loss        = loss,
-        training_op = training_op
-    )
-
-def TfTrainNetwork(NetworkGraph, Data, num_epochs, num_steps = 200, batch_size = 32, save=False):
-
-    tf.set_random_seed(2345)
-    with tf.Session() as sess:
-        sess.run(tf.global_variables_initializer())
-        for ep in range(num_epochs):
-            sess.run(NetworkGraph['training_op'], feed_dict={NetworkGraph['x']: Data['x_train'],NetworkGraph['y']: Data['y_train']})
-            if ep % 100 == 0:
-                mse = NetworkGraph['loss'].eval(feed_dict = {NetworkGraph['x']: Data['x_train'],NetworkGraph['y']: Data['y_train']})
-                logging.debug("epoch num: " + str(ep) + "MSE: " + str(mse))
-
-        #hold-out data TODO - move to seperate hold out function
-        y_pred = sess.run(NetworkGraph['outputs'],feed_dict={NetworkGraph['x']: Data['x_ho_data']})
-
-    return y_pred
-
 def RunNetworkArch(df, model_params):
-    ##implement the tf model on the training data
     Data         = ConstructTestData(df, model_params)
-
- #   NetworkGraph = ConstructNetworkArch_Simple(model_params)
- #   y_pred       = TrainNetwork(NetworkGraph,Data,model_params.num_epochs)
- #   tf.reset_default_graph() #need to clear you computational graph
 
     file_path = 'my_simple_rnn_model.model'
 
     if (model_params.train_needed==True):
-        TrainSimpleRnn(Data['x_train'],Data['y_train'],model_params,file_path)
+        if model_params.network_model==NetworkModel.simpleRNN:
+            rnn_classifier = SimpleRNN()
+            rnn_model      = RnnSimpleModel()
+            TrainClassifierWrapper(Data['x_train'],Data['y_train'],model_params,file_path,rnn_classifier)
+            y_pred = PredictClassifierWrapper(Data['x_ho_data'],Data['y_ho_data'],model_params,file_path,rnn_classifier,rnn_model)
 
-    y_pred = PredictSimpleRnn(Data['x_ho_data'],Data['y_ho_data'],model_params,file_path)
+        elif model_params.network_model==NetworkModel.simpleLSTM:
+            lstm_classifier = SimpleRNN() #TODO - change to simple LSTM
+            lstm_model      = RnnSimpleModel()
+            TrainClassifierWrapper(Data['x_train'],Data['y_train'],model_params,file_path,lstm_classifier)
+            y_pred = PredictClassifierWrapper(Data['x_ho_data'],Data['y_ho_data'],model_params,file_path,lstm_classifier,lstm_model)
+        elif model_params.network_model==NetworkModel.DualLstmAttn:
+            lstm_attn_classifier = da_rnn
+            TrainClassifierWrapper(Data['x_train'],Data['y_train'],model_params,file_path,lstm_attn_classifier)
+            #TODO - need to change the predict to be with the loaders
+            #dual_lstm_model = da_rnn()
+            #y_pred = PredictClassifierWrapper(Data['x_ho_data'],Data['y_ho_data'],model_params,file_path,lstm_attn_classifier , dual_lstm_model)
+            print("need to add default network")
+    else:
+        print("error - we shouldnt call it when no training is needed")
 
     logging.debug("y_pred shape is: " + str(len(y_pred)))
-    logging.debug(y_pred)
+    logging.debug(y_pred.head())
 
    # tf.reset_default_graph()
    # y_pred_LSTM = ConstructNetworkArch_LSTM(model_params)
@@ -562,7 +433,7 @@ def TrainMyModel(dates,stock_list,configuration_list):
     ################################################################################
     ################################################################################
 if __name__ == '__main__':# needed due to: https://github.com/pytorch/pytorch/issues/494
-    initialize_logger(r'C:\Users\mofir\egit-master\ws\MLproject')
+    initialize_logger(r'C:\Users\mofir\egit-master\git\egit-github\MLproject')
 
     USE_CUDA = False #torch.cuda.is_available()
     device = torch.device("cuda" if USE_CUDA else "cpu")
@@ -571,7 +442,7 @@ if __name__ == '__main__':# needed due to: https://github.com/pytorch/pytorch/is
 
     ###################################defining stocks list and time range#############################################
 
-    start_date_str = '2013-01-01'
+    start_date_str = '2014-01-01'
     end_date_str   = '2018-10-30'
     dates_range = pd.date_range(start_date_str,end_date_str) #we get a DatetimeIndex object in a list
     time_granularity=TimeGrnularity.daily #TODO- add support for other tine granularity as well
@@ -604,10 +475,12 @@ if __name__ == '__main__':# needed due to: https://github.com/pytorch/pytorch/is
     config_net_default.hidden_layer_size    = 50
     config_net_default.num_epochs           = 3 #i think 30 may be optimal
     config_net_default.prediction_method    = PredictionMethod.close
-    config_net_default.normalization_method = NormalizationMethod.StandardScaler #RegL2Norm
+    config_net_default.normalization_method = NormalizationMethod.simple#NormalizationMethod.RegL2Norm  #StandardScaler
     config_net_default.batch_size           = 64
     config_net_default.train_needed         = True #True False
     config_net_default.use_cuda             = USE_CUDA
+    config_net_default.train_data_precentage  = 0.7
+    config_net_default.network_model        = NetworkModel.DualLstmAttn
 
     config_model_default = Config_model
 
@@ -619,7 +492,7 @@ if __name__ == '__main__':# needed due to: https://github.com/pytorch/pytorch/is
     i = 0
     while i < len(stock_list):
         CurrStockDataFrame = AllStocksDf[i]
-        print(CurrStockDataFrame)
+        print(CurrStockDataFrame.head())
         HyperParameter_Optimizations(CurrStockDataFrame, config_model_default, stat_params)
         i = i + 1
     #TrainMyModel(dates,stock_list,configuration_list)
