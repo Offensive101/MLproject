@@ -86,16 +86,18 @@ class NormalizationMethod(Enum):
     RegL2Norm = 1 # seems to give very bad results
     StandardScaler = 2
     simple = 3
+    Naive = 4
 
 class PredictionMethod(Enum):
     close = 1
-    slope = 2 #for it to work - need to change the TF output to be a binary 0/1 with probabilities, see here:https://stackoverflow.com/questions/40432118/tensorflow-mlp-example-outputs-binary-instead-of-decimal
+    binary = 2 # TODO - need to adjust the model to be a binary 0/1 with probabilities
     high  = 3
 
 class NetworkModel(Enum):
     simpleRNN = 1
     simpleLSTM = 2
     DualLstmAttn = 3
+    BiDirectionalLstmAttn = 4 #TODO - add
 
 class Network_Params:
     def __init__(self, x_period_length, y_period_length,train_data_precentage,hidden_layer_size,learning_rate,network_df,num_epochs,batch_size,use_cuda,train_needed,network_model):
@@ -142,21 +144,18 @@ class CreateDataset(Dataset):
 ################################################################################
 
 def GetShiftingWindows(thelist, step_size=1,window_width=5):
-    #return [ thelist[x:x+size] for x in range( len(thelist) - size + 1 ) ] #TODO: do it smarter and better
     return (np.hstack(thelist[i:1+i-window_width or None:step_size] for i in range(0,window_width) ))
 
 class Config_model:
     def __init__(self, feature_list, Network_Params):
         self.feature_list = feature_list
-    #self.Network_Params =
         Network_Params.feature_num = len(self.feature_list)
 
-def ConstructTestData(df, model_params):
+def ConstructTestData(df, model_params,test_train_split):
     logging.debug("ConstructTestData : ")
     logging.debug("pre normalization df : ")
     logging.debug(df.head())
 
-    #normalize all the features - TODO - add normalization options?
     if model_params.normalization_method==NormalizationMethod.StandardScaler:
         # Create the Scaler object
 
@@ -164,22 +163,17 @@ def ConstructTestData(df, model_params):
         std_scale = scaler.fit(df)
         array_normalize = std_scale.transform(df)
         df_normalize    = pd.DataFrame(array_normalize,columns = df.columns.values)
-        print(df_normalize)
         df = df_normalize
-
-        #for column in df.columns:
-        # Fit your data on the scaler object
-        #    std_scale = scaler.fit(df[column])#TODO - do i need to seperate here to train and test?
-        #    df[column] = std_scale.transform(df[column])
 
     elif model_params.normalization_method==NormalizationMethod.RegL2Norm:
         for column in df.columns:
-        #x_array = np.array(FullFeaturesDF[column])
             df_col_reshape = df[column].values.reshape(-1, 1)
             df[column] = preprocessing.normalize(df_col_reshape, norm='l2')
-        #my_df = my_df.join(df_temp[feature])
-    else:
+    elif model_params.normalization_method==NormalizationMethod.simple:
         df = df/df.ix[0] #executed in c lower level while a loop on all symbols executed in higher levels
+    else:
+        df = df/300  #Try normalize the data simply by dividing by  a large number (200/300) so the weights won't be too big. Because mean & std keep changing when using over live trade
+
 
     logging.debug("post normalization df : ")
     logging.debug(df.head())
@@ -195,76 +189,88 @@ def ConstructTestData(df, model_params):
         print("ConstructTestData: close method")
         print(df['close'])
         y_data = (np.asarray(df['close'])[1:])
-    elif (model_params.prediction_method ==  PredictionMethod.slope):
+    elif (model_params.prediction_method ==  PredictionMethod.binary):
         increase_value = (np.asarray((df['close'])[1:])) > ((np.asarray(df['close'])[0:-1]))
-        print(increase_value)
+
+        logging.debug(df['close'].head(n=5))
+        logging.debug(increase_value[4:0])
+
         y_data = np.asarray(increase_value)
     elif (model_params.prediction_method ==  PredictionMethod.high):
         y_data = (np.asarray(df['high'])[1:])
     else:
         y_data = (np.asarray(df['close'])[1:])
 
-    x_data_len = len(x_data)
-    y_data_len = len(y_data)
+    if (test_train_split == True):
+        x_data_len = len(x_data)
+        y_data_len = len(y_data)
 
-    x_round_len = x_data_len - (x_data_len%num_of_periods)
-    y_round_len = y_data_len - (y_data_len%num_of_periods)
+        x_round_len = x_data_len - (x_data_len%num_of_periods)
+        y_round_len = y_data_len - (y_data_len%num_of_periods)
 
-    x_data = x_data[:x_round_len]
-    #x_batches = x_data.reshape(-1,num_of_periods,features_num) #all features of num_of_period days as a vector
-    x_batches = GetShiftingWindows(x_data,step_size=1,window_width=num_of_periods)
+        x_data = x_data[:x_round_len]
+        x_batches = GetShiftingWindows(x_data,step_size=1,window_width=num_of_periods)
 
-    logging.debug("x_batch size: " + str(x_batches.shape))
-    logging.info(x_batches)#TODO- need to see it looks as i expect
+        logging.debug("x_batch size: " + str(x_batches.shape))
+        #logging.debug(x_batches)#TODO- need to see it looks as i expect
 
-    y_data = y_data[:y_round_len]
-    #y_batches = y_data.reshape(-1,num_of_periods,1) # in y we only have 1 feature which is the forecast
-    y_batches = y_data[num_of_periods-1:]
-    y_batches = y_batches.reshape(-1,1)
+        y_data = y_data[:y_round_len]
+        y_batches = y_data[num_of_periods-1:]
+        y_batches = y_batches.reshape(-1,1)
 
-    logging.debug("y_batch size: " + str(y_batches.shape))
-    logging.info(y_batches)
+        logging.debug("y_batch size: " + str(y_batches.shape))
+        #logging.debug(y_batches)
 
-     #  x_batches = x_batches[:-1]
+        logging.debug("y_data size: " + str(y_data.shape))
+        logging.debug("x_data size: " + str(x_data.shape))
 
-    logging.debug("y_data size: " + str(y_data.shape))
-    logging.debug("x_data size: " + str(x_data.shape))
+        #split to test and train data
 
-    #split to test and train data
+        train_data_precentage = model_params.train_data_precentage
+        x_batch_rows = x_round_len - (num_of_periods - 1)
 
-    train_data_precentage = model_params.train_data_precentage
-    x_batch_rows = x_round_len - (num_of_periods - 1)
+        train_data_length = int(train_data_precentage * x_batch_rows)
+        logging.debug("train_data_length: " + str(train_data_length))
 
-    train_data_length = int(train_data_precentage * x_batch_rows)
-    logging.debug("train_data_length: " + str(train_data_length))
+        x_train = x_batches[0:train_data_length]
+        y_train = y_batches[0:train_data_length]
 
-    x_train = x_batches[0:train_data_length]
-    y_train = y_batches[0:train_data_length]
+        x_ho_data = x_batches[train_data_length:]
+        y_ho_data = y_batches[train_data_length:]
 
-    x_ho_data = x_batches[train_data_length:]
-    y_ho_data = y_batches[train_data_length:]
+        logging.debug("x_train shape is: " + str(x_train.shape))
+        #logging.info(x_train)
+        logging.debug("y_train shape is: " + str(y_train.shape))
 
-    y_raw = y_data.reshape(-1,1)
-    logging.debug("y_raw shape is: " + str(y_raw.shape))
-    logging.info(y_raw)
+        logging.debug("x_ho shape is: " + str(len(x_ho_data)))
+        #logging.info(x_ho_data)
+        logging.debug("y_ho shape is: " + str(len(y_ho_data)))
+        #logging.info(y_ho_data)
 
-    logging.debug("x_train shape is: " + str(x_train.shape))
-    logging.info(x_train)
-    logging.debug("y_train shape is: " + str(y_train.shape))
-
-    logging.debug("x_ho shape is: " + str(len(x_ho_data)))
-    logging.info(x_ho_data)
-    logging.debug("y_ho shape is: " + str(len(y_ho_data)))
-    logging.info(y_ho_data)
-
-
-    return dict(
+        data = dict(
         x_train = x_train,
         y_train = y_train,
         x_ho_data = x_ho_data,
         y_ho_data = y_ho_data,
-        y_raw = y_raw
     )
+    else:
+        logging.debug("x size: " + str(x_data.shape))
+        logging.debug(x_data)
+        logging.debug("y size: " + str(y_data.shape))
+        logging.debug(y_data)
+
+        data = dict(
+        X = x_data,
+        y = y_data
+    )
+
+    return data
+
+
+
+################################################################################
+################################################################################
+
 def TrainSimpleRNN(x_train,y_train,model_params,file_path):
     #print(x_train)
     #print(y_train)
@@ -306,59 +312,44 @@ def PredictSimpleRNN(x_test,y_test,model_params,file_path):
     labels_prediction_total, evaluation_summary = SimpleRNN.Predict(model,loss_fn,test_loader, metrics, cuda = model_params.use_cuda)
     return (labels_prediction_total)
 
-def TrainClassifierWrapper(x_train,y_train,y_raw,model_params,file_path,classifer):
-    #print(x_train)
-    #print(y_train)
-    train_dataset = CreateDataset(x_train,y_train)
-    #print("train data size is: " + str(train_dataset.len))
-    train_loader = DataLoader(dataset=train_dataset, batch_size=model_params.batch_size, shuffle=False, num_workers=1)
+def TrainPredictDualLSTM(X,y,model_params,file_path):
+    print("hello from TrainDualLSTM")
 
-    input_size  = x_train.shape[1]
-    train_size  = x_train.shape[0]
-    hidden_size = model_params.hidden_layer_size
-    output_size = y_train.shape[1]
+    clf_DualLSTM = Dual_Lstm_Attn.da_rnn(train_size_precentage = model_params.train_data_precentage,
+                                   X=X,
+                                   y=y,
+                                   encoder_hidden_size = 64, # TODO - model_params.encoder_hidden_size
+                                   decoder_hidden_size = 64, # TODO - model_params.decoder_hidden_size
+                                   T= model_params.num_of_periods,
+                                   learning_rate = model_params.learning_rate,
+                                   batch_size = model_params.batch_size
+                                   )
 
-    clf = classifer(train_size,input_size,x_train,y_train,
-                    #train_loader,
-              encoder_hidden_size = hidden_size,
-              decoder_hidden_size = hidden_size, T = model_params.num_of_periods,
-              learning_rate = 0.01, batch_size = 128,
-              parallel = False, debug = False)
+    if (model_params.train_needed == True):
+        perdiction_is_binary = model_params.prediction_method == PredictionMethod.binary
+        clf_DualLSTM.Train(num_epochs = model_params.num_epochs,perdiction_is_binary = perdiction_is_binary)
 
+    else:
+        try:
+            clf_DualLSTM.load_state_dict(torch.load(file_path))
+        except:
+            print("error!! didn't find trained model")
 
-    clf.Train(num_epochs = model_params.num_epochs,y_raw = y_raw)
+    print("hello from PredictDualLSTM")
+    y_pred = clf_DualLSTM.Predict()
 
-def PredictClassifierWrapper(x_test,y_test,model_params,file_path,classifer,general_model):
-    print("hello from PredictSimpleRnn")
-    test_dataset = CreateDataset(x_test,y_test)
-    test_loader = DataLoader(dataset=test_dataset, batch_size=model_params.batch_size, shuffle=False, num_workers=0)
+    train_size = int(model_params.train_data_precentage * X.shape[0])
+    y_true = y[train_size:len(y)]
 
-    input_size  = x_test.shape[1]
-    hidden_size = model_params.hidden_layer_size
-    output_size = y_test.shape[1]
+    print(y_true.shape)
+    print(y_pred.shape)
 
-    model = general_model(input_size, hidden_size, output_size)
-
-    clf = classifer(input_size,input_size,x_test,y_test,
-                    #train_loader,
-              encoder_hidden_size = hidden_size,
-              decoder_hidden_size = hidden_size, T = 10,
-              learning_rate = 0.01, batch_size = 128,
-              parallel = False, debug = False)
-    #load traind model
-    try:
-        model.load_state_dict(torch.load(file_path))
-    except:
-        print("error!! didn't find trained model")
-
-    loss_fn = GeneralModelFn.loss_fn
-    metrics = GeneralModelFn.metrics
-
-    labels_prediction_total, evaluation_summary = clf.Predict(model,loss_fn,test_loader, metrics, cuda = model_params.use_cuda)
-    return (labels_prediction_total)
+    return y_pred,y_true
 
 def RunNetworkArch(df, model_params):
-    Data         = ConstructTestData(df, model_params)
+    test_train_split = model_params.network_model!=NetworkModel.DualLstmAttn
+
+    Data         = ConstructTestData(df, model_params,test_train_split = test_train_split)
 
     file_path = 'my_simple_rnn_model.model'
 
@@ -372,14 +363,14 @@ def RunNetworkArch(df, model_params):
         elif model_params.network_model==NetworkModel.simpleLSTM:
             lstm_classifier = SimpleRNN #TODO - change to simple LSTM
             lstm_model      = RnnSimpleModel
-            TrainClassifierWrapper(Data['x_train'],Data['y_train'],model_params,file_path,lstm_classifier)
-            y_pred = PredictClassifierWrapper(Data['x_ho_data'],Data['y_ho_data'],model_params,file_path,lstm_classifier,lstm_model)
+            TrainSimpleRNN(Data['x_train'],Data['y_train'],model_params,file_path,lstm_classifier)
+            y_pred = PredictSimpleRNN(Data['x_ho_data'],Data['y_ho_data'],model_params,file_path,lstm_classifier,lstm_model)
+
         elif model_params.network_model==NetworkModel.DualLstmAttn:
-            lstm_attn_classifier = da_rnn
-            TrainClassifierWrapper(Data['x_train'],Data['y_train'],Data['y_raw'],model_params,file_path,lstm_attn_classifier)
-            #TODO - need to change the predict to be with the loaders
-            #dual_lstm_model = da_rnn()
-            #y_pred = PredictClassifierWrapper(Data['x_ho_data'],Data['y_ho_data'],model_params,file_path,lstm_attn_classifier , dual_lstm_model)
+            y_pred,y_true = TrainPredictDualLSTM(Data['X'],Data['y'],model_params,file_path)
+            Data['y_ho_data'] = y_true
+
+        else:
             print("need to add default network")
     else:
         print("error - we shouldnt call it when no training is needed")
@@ -387,12 +378,10 @@ def RunNetworkArch(df, model_params):
     logging.debug("y_pred shape is: " + str(len(y_pred)))
     logging.debug(y_pred[0:5])
 
-   # tf.reset_default_graph()
-   # y_pred_LSTM = ConstructNetworkArch_LSTM(model_params)
     i=0
-    while i < len(y_pred):
-        print(y_pred[i])
-        print(Data['y_ho_data'][i])
+    while i < 10: #len(y_pred):
+        print("y_pred is:" + str(y_pred[i]))
+        print("y_true is:" + str(Data['y_ho_data'][i]))
         i=i+1
 
     error = abs((y_pred - Data['y_ho_data'])/Data['y_ho_data'])*100
@@ -416,11 +405,11 @@ def HyperParameter_Optimizations(CurrStockDataFrame, config_net_default, stat_pa
 
     skopt_grid = {
     #'num_of_periods': [1,2,3,4,5,6,7,8,9,10]
-    'learning_rate': [0.01]#, 0.05, 0.2, 0.25, 0.3, 0.5],
+    'learning_rate': [0.001]#, 0.05, 0.2, 0.25, 0.3, 0.5],
     #'hidden_layer_size': (20, 200),
     #'num_epochs' : (1000,8000)
     }
-    #TODO - what about mini batch size
+    #TODO - what about mini batch size + change the gridsearchCV
     training = True
     real_value      = []
     predictad_value = []
@@ -437,7 +426,8 @@ def HyperParameter_Optimizations(CurrStockDataFrame, config_net_default, stat_pa
         for value in skopt_grid[key]:
             if (training==True):
                 curr_config = config_net_default
-                curr_config.num_of_periods = value
+                #curr_config[key] = value
+                #print(str(key) + str(value))
                 real_value,predictad_value = RunNetworkArch(CurrStockDataFrame, curr_config.Network_Params)
                 real_value_list.append(real_value)
                 predictad_value_list.append(predictad_value)
@@ -449,7 +439,8 @@ def HyperParameter_Optimizations(CurrStockDataFrame, config_net_default, stat_pa
             curr_real_value = real_value[0:-1]
             curr_predicted_value = predictad_value[0:-1]
             buy_vector = next_predicted_value > curr_predicted_value
-            prediction_stats_df.loc[value] = CalcSt(real_value,predictad_value,buy_vector).loc[0]
+            #print(buy_vector)
+            prediction_stats_df.loc[value] = CalcSt(real_value,predictad_value,buy_vector,plot_buy_decisions = True).loc[0]
             #print("total prediction_stats_df for iteration: " + str(i))
             #print(prediction_stats_df)
             i = i+1
@@ -480,7 +471,7 @@ def TrainMyModel(dates,stock_list,configuration_list):
         for curr_config in configuration_list:
             print("curr_config is: " + str(curr_config))
             if (training==True):
-                CurrStockDataFrame = ConstructDfFeature(dates,stock,curr_config.feature_list)
+                CurrStockDataFrame = FeatureBuilderMain(dates,stock,curr_config.feature_list)
                 real_value,predictad_value = RunNetworkArch(CurrStockDataFrame, curr_config.Network_Params)
                 with open('train.pickle', 'wb') as f:
                     pickle.dump([real_value, predictad_value], f)
@@ -510,7 +501,7 @@ if __name__ == '__main__':# needed due to: https://github.com/pytorch/pytorch/is
     start_date_str = '2014-01-01'
     end_date_str   = '2018-10-30'
     dates_range = pd.date_range(start_date_str,end_date_str) #we get a DatetimeIndex object in a list
-    time_granularity=TimeGrnularity.daily #TODO- add support for other tine granularity as well
+    time_granularity=TimeGrnularity.daily #TODO- add support for other time granularity as well
 
     stock_list = ['MLNX'] #['MLNX','NVDA','FB','INTC']
 
@@ -518,7 +509,7 @@ if __name__ == '__main__':# needed due to: https://github.com/pytorch/pytorch/is
     #total_funds_start_value = 10000
 
     ###################################defining Feature list#############################################
-    feature_list   = ['close','open','high','low'] #,'high','low'] #,'open','high','low','volume'] #TODO - add more features
+    feature_list   = ['close'] #,'open','high','low'] #TODO - add more features
     my_feature_list = MyFeatureList(feature_list)
 
     AllStocksDf = FeatureBuilderMain(
@@ -535,20 +526,19 @@ if __name__ == '__main__':# needed due to: https://github.com/pytorch/pytorch/is
 
     config_net_default   = Network_Params
     config_net_default.feature_num          = len(feature_list)
-    config_net_default.num_of_periods       = 2
-    config_net_default.learning_rate        = 0.002
+    config_net_default.num_of_periods       = 4 #2
+    config_net_default.learning_rate        = 0.001
     config_net_default.hidden_layer_size    = 50
-    config_net_default.num_epochs           = 3 #i think 30 may be optimal
+    config_net_default.num_epochs           = 500 #i think 30 may be optimal
     config_net_default.prediction_method    = PredictionMethod.close
-    config_net_default.normalization_method = NormalizationMethod.StandardScaler
+    config_net_default.normalization_method = NormalizationMethod.Naive
     config_net_default.batch_size           = 64
     config_net_default.train_needed         = True #True False
     config_net_default.use_cuda             = USE_CUDA
     config_net_default.train_data_precentage  = 0.7
-    config_net_default.network_model        = NetworkModel.simpleRNN #DualLstmAttn
+    config_net_default.network_model        = NetworkModel.DualLstmAttn #DualLstmAttn #simpleRNN
 
     config_model_default = Config_model
-
     config_model_default.feature_list   = feature_list
     config_model_default.Network_Params = config_net_default
 
@@ -560,11 +550,8 @@ if __name__ == '__main__':# needed due to: https://github.com/pytorch/pytorch/is
         print(CurrStockDataFrame.head())
         HyperParameter_Optimizations(CurrStockDataFrame, config_model_default, stat_params)
         i = i + 1
+
     #TrainMyModel(dates,stock_list,configuration_list)
-
     #slice by row range using df.ix[sd:ed,['MLNX','IBM']] only column: df[['MLNX','IBM']]
-
-    #TODO - we can run over many couples of stocks and find stocks with high correlation to each other
-
 
     logging.info('*****************finished executing******************')

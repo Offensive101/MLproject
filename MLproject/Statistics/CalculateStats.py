@@ -137,7 +137,7 @@ def CalculateAllStatistics(real_value,predictad_value,buy_vector,plot_buy_decisi
     real_value_shifted = real_value[1:]
     predictad_value_shifted = predictad_value[1:]
 
-    buy_vector = predictad_value_shifted > last_value
+    #buy_vector = predictad_value_shifted > last_value
 
     if plot_buy_decisions:
         plt.plot(buy_vector * real_value_shifted,'o',color='green')
