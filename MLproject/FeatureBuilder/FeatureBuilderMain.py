@@ -30,7 +30,9 @@ class MyFeatureList:
         self.rolling_mean     = True if 'rolling_mean' in feature_list else False
         self.rolling_bands    = True if 'rolling_bands' in feature_list else False
         self.daily_returns    = True if 'daily_returns' in feature_list else False
-        self.market_direction = True if 'market_direction' in feature_list else False
+        self.momentum         = True if 'momentum' in feature_list else False
+        self.sma_             = True if 'sma_' in feature_list else False
+        self.b_bonds          = True if 'b_bonds' in feature_list else False
 
 class FeatureBuilder():
     def __init__(self, stocks_list,feature_list, dates_range,time_granularity):
@@ -93,6 +95,15 @@ def CalcFeatures(CurrStockDataFrame, feature_list):
 
     if feature_list.daily_returns == True:
         FullFeaturesDF['daily_returns'] = stat_features.compute_daily_returns(CurrStockDataFrame['close'],plot_graphs=False)
+
+    if feature_list.momentum == True:
+        FullFeaturesDF['momentum'] = stat_features.compute_momentum(CurrStockDataFrame['close'],window=5)
+
+    if feature_list.sma_ == True:
+        FullFeaturesDF['sma_'] = stat_features.compute_sma(CurrStockDataFrame['close'],window=5)
+
+    if feature_list.b_bonds == True:
+        FullFeaturesDF['b_bonds'] = stat_features.compute_bollinger_bonds(CurrStockDataFrame['close'],window=5)
 
     return FullFeaturesDF
 

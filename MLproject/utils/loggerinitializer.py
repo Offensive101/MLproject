@@ -10,14 +10,14 @@ import os.path
 def initialize_logger(output_dir):
     #Get main logger to add new specifications. Then set global log level to debug
     logger = logging.getLogger()
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(logging.INFO)
 
     # create console handler and set level to info
     handler = logging.StreamHandler()
     handler.setLevel(logging.INFO) #on the console we want only INFO or higher messages presented
     formatter = logging.Formatter("%(levelname)s - %(message)s")
     handler.setFormatter(formatter)
-    logger.addHandler(handler) #add my console handler to my main logger.
+    #logger.addHandler(handler) #add my console handler to my main logger.
 
     # create error file handler and set level to error
     handler = logging.FileHandler(os.path.join(output_dir, "run_error.log"),"w", encoding=None, delay="true")

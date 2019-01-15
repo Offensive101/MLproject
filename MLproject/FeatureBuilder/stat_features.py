@@ -94,10 +94,29 @@ def PlotRollingMean(df):
     df_rolling_lower_band.plot(label='Rolling lower band',ax=ax)
     ax.legend(["SPY","Rolling mean","Rolling upper band","Rolling lower band"])
 
+def compute_sma(df,window):
+    df_average = df.copy()
+    df_average = df_average.rolling(center=False,window=window).mean()
+
+    return df_average
+
+def compute_bollinger_bonds(df,window):
+    df_sma = compute_sma(df,window)
+    df_std = df.rolling(center=False,window=window).std()
+
+    df_bb = (df - df_sma)/(2*df_std)
+
+    return df_bb
+
+def compute_momentum(df,window):
+    df_momentum = df.copy()
+    df_momentum = (df/df_momentum.shift(window)) - 1
+    return df_momentum
+
 def compute_daily_returns(df,plot_graphs):
     df_daily_return = df.copy() #copy gives DataFrame to match size and culomn names
    # df_daily_return[1:] = (df.ix[1:,:]/df.ix[:-1,:].values) - 1 #using .values to access the underline numpy array. o.w panadas will try to match each row based on index when performing element wise operation
-    df_daily_return = (df/df.shift(1)) - 1 #much easier using pandas then the slicing above
+    df_daily_return = (df/df_daily_return.shift(1)) - 1 #much easier using pandas then the slicing above
   #  print("df_daily_return: ", df_daily_return)
   #  df_daily_return.ix[0,:] = 0 #set daily returns for row 0 to 0 (can't be calculated) - o.w pandas leave it with nan values
 
