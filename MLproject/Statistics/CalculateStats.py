@@ -17,12 +17,14 @@ from bokeh.layouts import column
 class StatParam(object):
     false_negative_ratio      = 0
     false_positive_ratio      = 0
-    true_negative_ratio      = 0
-    true_positive_ratio      = 0
+    true_negative_ratio       = 0
+    true_positive_ratio       = 0
     #missing_buy_in_up_ratio   = 0
     #false_buy_ratio_in_down   = 0
-    mean_gain                 = 0
-    mean_error                = 0
+    AvgGainEXp                 = 0
+    AvgGainEXp_opt             = 0
+    mean_gain                  = 0
+    mean_error                 = 0
     #std                       = 0
     #mean_potential_gain       = 0
 
@@ -144,6 +146,21 @@ def MeanGain(real_value,buy_vector):
 
     return mean_gain/mean_potential_gain
 
+def AvgGain(real_value,buy_vector):
+    #how much gain starting (starting form 1) we have achieved
+    today_real_value    = real_value[0:-1]
+    tommorow_real_value = real_value[1:]
+    opt_buy_vector      = GetBuyVector(real_value)
+
+    gain = 1
+    opt_gain = 1
+
+    for ind, close_price in enumerate(today_real_value):
+        gain = gain * (tommorow_real_value[ind]/today_real_value[ind]) * buy_vector[ind] + gain * (1 - buy_vector[ind])
+        opt_gain = opt_gain * (tommorow_real_value[ind]/today_real_value[ind]) * opt_buy_vector[ind] + opt_gain * (1 - opt_buy_vector[ind])
+
+    return gain
+
 def MeanPotentialGain(real_value):
     #how much gain in precentage we could have achieved
     last_value = real_value[0:-1]
@@ -159,9 +176,11 @@ def MeanError(real_value,predictad_value):
     error = 100 * abs(values_diff)/real_value
     return error.mean()
 
-def CalculateAllStatistics(real_value,predictad_value,plot_buy_decisions = False): #should include in [0] the previous day
+def CalculateAllStatistics(real_value,predictad_value,buy_vector = None,plot_buy_decisions = False): #should include in [0] the previous day
 
-    buy_vector = GetBuyVector(predictad_value)
+    if buy_vector is None:
+        buy_vector = GetBuyVector(predictad_value)
+
     df_prediction_statistics = pd.DataFrame(columns=GetClassStatList())
 
     df_prediction_statistics.at[0,'true_negative_ratio']      = TrueNegativeRatio(real_value,buy_vector)
@@ -170,9 +189,12 @@ def CalculateAllStatistics(real_value,predictad_value,plot_buy_decisions = False
     df_prediction_statistics.at[0,'false_positive_ratio']     = FalsePositiveRatio(real_value,buy_vector)
     #df_prediction_statistics.at[0,'missing_buy_in_up_ratio']   = MissingBuyInUpRatio(real_value,buy_vector)
     #df_prediction_statistics.at[0,'false_buy_ratio_in_down']   = FalseBuyInDownRatio(real_value,buy_vector)
-    df_prediction_statistics.at[0,'mean_gain']                 = MeanGain(real_value,buy_vector)
     df_prediction_statistics.at[0,'mean_error']                = MeanError(real_value,predictad_value)
     #df_prediction_statistics.at[0,'std']                       = 0
+
+    df_prediction_statistics.at[0,'mean_gain']      = MeanGain(real_value,buy_vector)
+    df_prediction_statistics.at[0,'AvgGainEXp']     = AvgGain(real_value,buy_vector)
+    df_prediction_statistics.at[0,'AvgGainEXp_Opt'] = AvgGain(real_value,GetBuyVector(real_value))
 
     #print(df_prediction_statistics)
 
@@ -198,7 +220,10 @@ def CalculateAllStatistics(real_value,predictad_value,plot_buy_decisions = False
         plt.plot(real_value_shifted,color='blue', label = "stock timeline")
         plt.ylabel('Price and decision (green)')
         plt.xlabel('time line')
-        plt.title('predicted stock and algorithm action')
-        plt.show()
+        if buy_vector is None:
+            plt.title('predicted stock and algorithm action')
+        else:
+            plt.title('predicted stock and algorithm action with RF classifier combined')
+        plt.show(block=False)
 
     return df_prediction_statistics

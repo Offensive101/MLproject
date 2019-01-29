@@ -24,6 +24,7 @@ from sklearn.model_selection import ParameterGrid
 from sklearn.model_selection import KFold
 from Statistics.CalculateStats import GetBuyVector
 from Statistics.CalculateStats import GetProfit
+from Statistics.CalculateStats import AvgGain
 
 from utils.loggerinitializer import *
 from scipy.fftpack.basic import _fix_shape
@@ -56,7 +57,7 @@ class encoder(nn.Module):
 
     def forward(self, input_data):
         input_data_shape = input_data.shape
-
+        #print(input_data_shape)
         input_size = input_data_shape[1]
         input_len  = input_data_shape[2]
         # input_data: batch_size * T - 1 * input_size
@@ -82,11 +83,16 @@ class encoder(nn.Module):
             x = torch.cat((hidden.repeat(self.input_size, 1, 1).permute(1, 0, 2),
                            cell.repeat(self.input_size, 1, 1).permute(1, 0, 2),
                            input_data.permute(0,1,2)), dim = 2) # batch_size * input_size * (2*hidden_size + T - 1)
-
+            #print(x.shape)
             #logging.debug("x_shape: " + str(x.shape))
 
             # Eqn. 9: Get attention weights
             batch_size = input_data.shape[1]
+
+            #print(input_len)
+            #print(self.hidden_size)
+
+            #print(self.total_x_features)
             x = self.attn_linear(x.view(-1, self.hidden_size * 2 + input_len)) # (batch_size * input_size) * 1     self.hidden_size * 2 + input_len
             x_softmax = x.view(-1, input_size)
             input_dim = x_softmax.dim()
@@ -287,25 +293,20 @@ class da_rnn(nn.Module):
         self.decoder_optimizer = optim.Adam(params = filter(lambda p: p.requires_grad, self.decoder.parameters()),
                                            lr = learning_rate)
 
-    def Train(self, X_train, y_history,y_train, X_test,y_test,use_pnl_loss = False,plot_results = True):
+    def Train(self, X_train, y_history,y_train, X_test,y_test,use_pnl_loss = False,plot_results = True,curr_stock = 'na'):
         #X_train,y_history has to come in as a DF
-
-
-        #logging.debug("**** in Dual LSTM train *****")
+        logging.debug("**** in Dual LSTM train *****")
         train_size = X_train.shape[0]
-        #logging.debug("X_train shape is: ")
-        #logging.debug(X_train.shape)
+
         iter_per_epoch = int(np.ceil(train_size * 1. / self.batch_size))
-        #logging.debug("Iterations per epoch: %3.3f ~ %d.", train_size * 1. / self.batch_size, iter_per_epoch)
 
         self.iter_losses = np.zeros(self.num_epochs * iter_per_epoch)
         self.epoch_losses = np.zeros(self.num_epochs)
 
-        #self.loss_func = BinaryLoss() if perdiction_is_binary==True else nn.MSELoss()
         self.loss_func = PnLLoss() if use_pnl_loss==True else nn.MSELoss()
 
         n_iter = 0
-        print("learning_rate: " + str(self.learning_rate))
+        logging.info("learning_rate: " + str(self.learning_rate))
         for i in range(self.num_epochs):
             #perm_idx = np.random.permutation(train_size)
             perm_idx = np.arange(train_size)
@@ -318,21 +319,7 @@ class da_rnn(nn.Module):
                 x_curr_train      = X_train.iloc[batch_idx]
                 y_curr_history    = y_history.iloc[batch_idx]
 
-                #logging.debug("x current batch width is: ")
-                #logging.debug(x_curr_train.shape)
-
                 y_curr_target  = np.expand_dims(y_curr_target, axis=1)
-
-                #logging.debug("y_curr_history & y_curr_target batch width is: ")
-                #logging.debug(y_curr_history.shape)
-                #logging.debug(y_curr_target.shape)
-
-                ##logging.debug("y_target shape is: " + str(y_target.shape))
-                ##logging.debug(y_target)
-                ##logging.debug("y_history shape is: " + str(y_history.shape))
-                ##logging.debug(y_history)
-                ##logging.debug("x_train shape is: " + str(x_curr_train.shape))
-                ##logging.debug(x_curr_train)
 
                 x_curr_train, y_curr_history = Variable(torch.tensor(x_curr_train.values).type(torch.FloatTensor)), Variable(torch.tensor(y_curr_history.values).type(torch.FloatTensor)),
                 y_curr_target = Variable(torch.from_numpy(y_curr_target).type(torch.FloatTensor))
@@ -361,7 +348,7 @@ class da_rnn(nn.Module):
                 logging.info("Epoch %d, loss: %3.4f.", i, self.epoch_losses[i])
 
             if (plot_results==True):
-                if i % 100 and i > 0 == 0:#TODO - can remove, takes running time
+                if (i % 100 == 0) and i > 0:#TODO - can remove, takes running time
                     #y_train_pred = self.Predict(on_train = True)\
                     y_test_pred = self.Predict(X_test,y_test,on_train = False)
                     j=0
@@ -371,15 +358,17 @@ class da_rnn(nn.Module):
                         j=j+1
                     #y_pred = np.concatenate((y_train_pred, y_test_pred))
                     #plt.ion()
-                    plt.figure()
+                    fig = plt.figure()
                     y_all = y_test #np.concatenate((y_train, y_test)) # y_test
-                    plt.plot(y_all, label = "True")
-                    plt.plot(y_test_pred, label = 'Predicted - Test')
+                    ax = fig.add_subplot(2,1,1)
+                    ax.plot(y_all, label = "True")
+                    ax.plot(y_test_pred, label = 'Predicted - Test')
                     #plt.plot(range(self.T , len(y_train_pred) + self.T), y_train_pred, label = 'Predicted - Train')
                     #plt.plot(range(self.T + len(y_test_pred) , len(y_all) + 1), y_test_pred, label = 'Predicted - Test')
 
-                    plt.title("epoch of : " + str(i) + "learning rate of: " + str(self.learning_rate))
-                    plt.legend(loc = 'upper left')
+                    ax.set_title("epoch of : " + str(i) + "learning rate of: " + str(self.learning_rate))
+                    ax.legend(loc = 'upper left')
+                    fig.savefig(curr_stock + ' train with test pred timeline, for epoch: ' + str(i) + '.png')
                     #plt.show(block=False)
             #if self.epoch_losses[i] < 0.0001:
             #    break
@@ -387,7 +376,7 @@ class da_rnn(nn.Module):
         if (plot_results==True):
             plt.figure()
             plt.plot(self.epoch_losses[i], label = "epoch training losses")
-            plt.show(block=False)
+            plt.savefig(curr_stock + 'losses as a function of epochs' + '.png')
 
     def train_iteration(self, x_train, y_history, y_target,use_pnl_loss):
         self.encoder_optimizer.zero_grad()
@@ -435,7 +424,7 @@ class da_rnn(nn.Module):
         return y_pred
 
 
-def tune(classifier,X, y_history, y, input_size, arguments, cv=5):
+def tune(classifier,X, y_history, y, input_size, arguments, cv=5,curr_stock = 'na'):
     '''
     This method is doing exactly what GridSearchCV is doing for a sklearn classifier.
     It will run cross validation training with cv folds many times. Each time it will evaluate the CV "performance" on a different
@@ -467,8 +456,8 @@ def tune(classifier,X, y_history, y, input_size, arguments, cv=5):
     for params in grid:
         classifier.__init__(input_size,**params)
 
-        logging.info("parameters iter in GridSearch is: " + str(p) + " out of: " + str(total_params))
-        logging.info(params)
+        print("parameters iter in GridSearch is: " + str(p) + " out of: " + str(total_params))
+        print(params)
         p = p+1
         clf_curr = classifier
         profit = 0
@@ -485,7 +474,7 @@ def tune(classifier,X, y_history, y, input_size, arguments, cv=5):
             y_train, y_test = np.take(y, train_index), np.take(y, test_index)
             ##logging.debug(y_train.shape)
 
-            clf_curr.Train(X_train,y_train_history,y_train,X_test,y_test,plot_results = False)
+            clf_curr.Train(X_train,y_train_history,y_train,X_test,y_test,plot_results = False,curr_stock = curr_stock)
             y_pred = np.array(clf_curr.Predict(X_test,y_test))
 
             ##logging.debug("y_pred & y_test shape: ")
@@ -496,8 +485,8 @@ def tune(classifier,X, y_history, y, input_size, arguments, cv=5):
                 y_error = np.equal(y_pred,y_test)
                 error = error + y_error.sum()/len(y_test)
             else:
-                buy_vector = GetBuyVector(y_pred)
-                curr_profit = GetProfit(buy_vector,y_test)
+                buy_vector  = GetBuyVector(y_pred)
+                curr_profit = AvgGain(y_test,buy_vector)
 
                 y_previous_true = y_test[0:-1]
                 y_current_true  = y_test[1:]
@@ -512,7 +501,7 @@ def tune(classifier,X, y_history, y, input_size, arguments, cv=5):
                 error_slope = error_slope + y_pred_direction_false.sum()
                 error = error + sklearn.metrics.mean_squared_error(y_test,y_pred)
                 profit = profit + curr_profit
-
+                print("curr profit is: " + str(curr_profit))
         if error < best_error:
             best_params = params
             best_error = error

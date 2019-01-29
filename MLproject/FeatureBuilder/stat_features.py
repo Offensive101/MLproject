@@ -180,6 +180,7 @@ def constraint1_Sum(x):
     return (sum_abs - x_sum)
 
 #TODO - can go to the DECIDER
+
 def OptimizePortfolioBySR(sd,ed,symbols,gen_plot=False):
     #optimize portfolio by sharp ratio
     #f(x)= -sharp_ratio, while x is multi dim, so each dim is an allocation to each of the stocks

@@ -24,13 +24,16 @@ class NormalizationMethod(Enum):
     StandardScaler = 2
     simple = 3
     RobustScaler = 4
-    Naive = 5
+    Naive = 5,
+    NoNorm = 6
 
 class PredictionMethod(Enum):
     close = 1
     binary = 2 # TODO - need to adjust the model to be a binary 0/1 with probabilities
     high  = 3
     slope  = 4
+    MultiClass = 5
+    pct_change = 6
 
 class LossFunctionMethod(Enum):
     pnl = 1
@@ -41,14 +44,22 @@ class NetworkModel(Enum):
     simpleLSTM = 2
     DualLstmAttn = 3
     BiDirectionalLstmAttn = 4 #TODO - add
+    RandomForest = 5
+    EnsambleLearners = 6
+
 
 ################################################################################
 ################################################################################
 ################################################################################
 
 class Network_Params:
-    def __init__(self, x_period_length, y_period_length,train_data_precentage,hidden_layer_size,learning_rate,network_df,num_epochs,batch_size,use_cuda,train_needed,SaveTrainedModel,only_train,tune_needed,loss_method,load_best_params,tune_HyperParameters, tune_extra_model_needed
-,network_model):
+    def __init__(self, x_period_length, y_period_length,
+                 train_data_precentage,hidden_layer_size,learning_rate,network_df,
+                 num_epochs,batch_size,use_cuda,train_needed,AddRFConfidenceLevel,smooth_graph,
+                 SaveTrainedModel,only_train,tune_needed,
+                 tune_branch_needed,loss_method,load_best_params,
+                 tune_HyperParameters, tune_extra_model_needed,network_model):
+
         self.x_period_length      = x_period_length
         self.y_period_length      = y_period_length
         self.train_data_precentage = train_data_precentage
@@ -56,6 +67,7 @@ class Network_Params:
         self.learning_rate        = learning_rate
         self.feature_num          = 1
         self.num_of_periods       = 5
+        self.smooth_graph         = False
         self.prediction_method    = PredictionMethod.close
         self.normalization_method = NormalizationMethod.StandardScaler
         self.num_epochs           = num_epochs
@@ -65,12 +77,17 @@ class Network_Params:
         self.network_model        = network_model
         self.only_train           = only_train
         self.train_needed         = train_needed
+        self.AddRFConfidenceLevel = AddRFConfidenceLevel
         self.SaveTrainedModel     = SaveTrainedModel
         self.tune_needed          = tune_needed
         self.loss_method          = loss_method
         self.tune_HyperParameters          = tune_HyperParameters
         self.tune_extra_model_needed       = tune_extra_model_needed
         self.load_best_params     = load_best_params
+
+        self.tune_branch_needed   = tune_branch_needed
+        #self.feature_list         = feature_list
+
 class Config_model:
     def __init__(self, feature_list, Network_Params):
         self.feature_list = feature_list
@@ -91,60 +108,109 @@ def GetModelDefaultConfig(USE_CUDA,stock_list,dates_range):
 
     complete_features = ['close','open','high','low','volume','rolling_mean','rolling_bands','daily_returns','momentum','sma_','b_bonds']
 
-    feature_list   = ['close'] #,'open','high'] #,'open','high','low'] #TODO - add more features
-    my_feature_list = MyFeatureList(feature_list)
+    master_feature_list  = ['close','low'] #,'open','high'] #,'open','high','low'] #TODO - add more features
 
-    AllStocksDf = FeatureBuilderMain(
+    #branch goal is to give some confidence level as to how probable we will see an increase, in addition to the master model
+    branch_feature_list = ['close','rolling_mean','rolling_bands','daily_returns','momentum','sma_','b_bonds']
+
+    my_master_feature_list = MyFeatureList(master_feature_list)
+    my_branch_feature_list = MyFeatureList(branch_feature_list)
+
+    AllStocksDf_master = FeatureBuilderMain(
                     stock_list,
-                    my_feature_list,
+                    my_master_feature_list,
                     dates_range,
                     time_granularity=time_granularity
                                 )
 
+    AllStocksDf_branch = FeatureBuilderMain(
+                        stock_list,
+                        my_branch_feature_list,
+                        dates_range,
+                        time_granularity=time_granularity
+                                )
      #TODO - do we want somehow to decide on only part of the features? (using PCA?)
+    '''
+    #######
+    '''
+    def GetRnnParams():
+        Rnnparams = {
+            'num_of_periods':1,
+            'learning_rate': 0.001,
+            'hidden_layer_size': 16,
+            'num_epochs': 12,
+            'batch_size': 16,
+            'normalization_method': NormalizationMethod.NoNorm,
+            'prediction_method': PredictionMethod.close,
+            'smooth_graph': True
+            }
+
+        return Rnnparams
+
+    def GetLstmParams():
+        LstmParams = {
+            'T':                   1,
+            'learning_rate':       0.0003,
+            'encoder_hidden_size': 64,
+            'decoder_hidden_size': 64,
+            'num_epochs':          8000,
+            'batch_size':          16,
+            'lstm_dropout':        0, #doesnt seem to do good adding dropout here (i tried 0.1)
+            'normalization_method': NormalizationMethod.Naive,
+            'prediction_method': PredictionMethod.close
+            }
+
+        return LstmParams
 
     '''
     ################################defining model parameters###########################
     '''
     config_net_default  = Network_Params
-    config_net_default.only_train           = False
-    config_net_default.feature_num          = len(feature_list)
+    config_net_default.feature_num          = len(master_feature_list)
     config_net_default.use_cuda             = USE_CUDA
     config_net_default.train_needed         = True
-
-    config_net_default.num_of_periods       = 2
-    config_net_default.learning_rate        = 0.001
-    config_net_default.hidden_layer_size    = 50
-    config_net_default.num_epochs           = 500 #i think 30 may be optimal
-    config_net_default.prediction_method    = PredictionMethod.close
-    config_net_default.normalization_method = NormalizationMethod.Naive
-    config_net_default.loss_method          = LossFunctionMethod.pnl #mse #
+    config_net_default.AddRFConfidenceLevel = False
+    config_net_default.stock_name           = None
+    config_net_default.num_of_periods       = 1
+    config_net_default.smooth_graph         = False #if set we "smooth the y prediction"
+    config_net_default.learning_rate        = 0.0003
+    config_net_default.hidden_layer_size    = 16
+    config_net_default.loss_method          = LossFunctionMethod.mse #
     config_net_default.batch_size           = 16
     config_net_default.network_model        = NetworkModel.DualLstmAttn #DualLstmAttn #simpleRNN
+ #simpleRNN
+    config_net_default.num_epochs           = 10000 if config_net_default.network_model==NetworkModel.DualLstmAttn else 12 #i think 30 may be optimal
+    config_net_default.normalization_method = NormalizationMethod.NoNorm #if config_net_default.network_model==NetworkModel.RandomForest else NormalizationMethod.Naive
+    config_net_default.prediction_method    = PredictionMethod.MultiClass if config_net_default.network_model==NetworkModel.RandomForest else PredictionMethod.close
 
     config_net_default.SaveTrainedModel        = True
     config_net_default.tune_needed             = False
     config_net_default.tune_extra_model_needed = False
-    config_net_default.train_data_precentage   = 0.9 if config_net_default.tune_needed else 0.7
-    config_net_default.load_best_params = False
+    config_net_default.train_data_precentage   = 0.7
+    config_net_default.load_best_params     = False
+    config_net_default.only_train           = False
+
+    #branch configurations - TODO make a new function
+    config_net_default.tune_branch_needed   = False
+    config_net_default.load_trained_model   = False
 
     if (config_net_default.tune_extra_model_needed & config_net_default.tune_needed):
         print("ERROR: can't tune both NN parameters and BlackBox parameters. has to first tune NN and then BlackBox")
         return 1
 
     #defines all the possible value to examine that will fir the model best
-    lstm_HyperParameters = {
-            'encoder_hidden_size': [32,64,96],
-            'decoder_hidden_size': [32,64,96],
-            'learning_rate':       [0.001],#,0.0001,0.001,0.003],#rough range would be [1e-3..1e-5]
-            'batch_size':          [16], #try only values less than 32
+    tune_lstm_HyperParameters = {
+            'encoder_hidden_size': [64],#[16,64]
+            'decoder_hidden_size': [64],#[16,64]
+            'learning_rate':       [0.0003,0.0005,0.0001],#,0.0001,0.001,0.003],#rough range would be [1e-3..1e-5]
+            'batch_size':          [16], #[8,16,32] #try only values less than 32
             'T':                   [config_net_default.num_of_periods], #can't change it here - i build the data from here
             'features_num' :       [config_net_default.feature_num],
-            'num_epochs':          [450,700,900],#500,700
+            'num_epochs':          [2000,4000,6000],#500,700
             'lstm_dropout':        [0] #doesnt seem to do good adding dropout here (i tried 0.1)
             }
 
-    rnn_HyperParameters = {}
+    tune_rnn_HyperParameters = {}
 
     lstm_best_HyperParameters = {
             'encoder_hidden_size': 64,
@@ -157,21 +223,23 @@ def GetModelDefaultConfig(USE_CUDA,stock_list,dates_range):
             'lstm_dropout':        0 #doesnt seem to do good adding dropout here (i tried 0.1)
             }
 
+    rnn_best_HyperParameters  = GetRnnParams()
+
     if config_net_default.network_model==NetworkModel.DualLstmAttn:
         if config_net_default.tune_needed==True:
-            tune_HyperParameters = lstm_HyperParameters
+            tune_HyperParameters = tune_lstm_HyperParameters
         else:
             tune_HyperParameters = lstm_best_HyperParameters
     else:
         if config_net_default.tune_needed==True:
-            tune_HyperParameters = rnn_HyperParameters
+            tune_HyperParameters = tune_rnn_HyperParameters
         else:
             tune_HyperParameters = lstm_best_HyperParameters
 
     config_net_default.tune_HyperParameters = tune_HyperParameters
 
     config_model_default = Config_model
-    config_model_default.feature_list   = feature_list
+    config_model_default.feature_list   = master_feature_list
     config_model_default.Network_Params = config_net_default
 
-    return config_model_default, AllStocksDf
+    return config_model_default, AllStocksDf_master , AllStocksDf_branch

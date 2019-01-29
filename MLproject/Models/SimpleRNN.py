@@ -81,8 +81,8 @@ def Train(input_size, hidden_size, output_size, train_loader,file_path,learning_
         logging.info(str(epoch))
 
         for i, data in enumerate(train_loader):
-            logging.debug("SimpleRnn: batch num: ")
-            logging.debug(str(i))
+            #logging.debug("SimpleRnn: batch num: ")
+            #logging.debug(str(i))
             xs, ys = data['features'], data['value']
             xs, ys = Variable(xs), Variable(ys)
             xs = xs.float()
@@ -104,7 +104,7 @@ def Train(input_size, hidden_size, output_size, train_loader,file_path,learning_
             backward_start_t0 = time.time()
             loss.backward(retain_graph=True)
             backward_step_time.append(time.time() - backward_start_t0)
-            nn.utils.clip_grad_norm(model.parameters(), 0.5)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
             optimizer_step_start_t0 = time.time()
             optimizer.step()
             optimizer_step_time.append(time.time() - optimizer_step_start_t0)
@@ -134,8 +134,6 @@ def Train(input_size, hidden_size, output_size, train_loader,file_path,learning_
         predictions_for_chart = stacking_for_charting(predictions)
         correct_values_for_chart = stacking_for_charting(correct_values)
 
-        #print(predictions_for_chart)
-
         steps = np.linspace(epoch*predictions_for_chart.shape[0],
                             (epoch+1)*predictions_for_chart.shape[0],
                             predictions_for_chart.shape[0])
@@ -153,6 +151,7 @@ def Train(input_size, hidden_size, output_size, train_loader,file_path,learning_
     torch.save(model.state_dict(), file_path)
 
     plt.show()
+    plt.savefig('true and pred values as a function of time' + '.png')
 
     logging.info("train_total_time: ")
     logging.info(train_total_time)
@@ -211,7 +210,7 @@ def Predict(model,loss_fn, test_loader,metrics,cuda=False):
         #summary_batch = {metric: metrics[metric](output_batch, labels_batch)
         #                 for metric in metrics}
         #summary_batch['loss'] = loss.data[0]
-        evaluation_summary.append(loss.data[0])
+        evaluation_summary.append(loss.data)
         output_total = np.concatenate((output_total,output_batch),axis=0)
 
     logging.info("evaluation_summary: ")
