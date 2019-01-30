@@ -66,7 +66,8 @@ def GetLogData(dataframe):
   return transformed
 
 def GetStockReturn(dataframe,after_log = False):
-  dataframe['Return_pct_change'] = dataframe['close'].pct_change(periods=1)
+  pct_change_window_size = 1
+  dataframe['Return_pct_change'] = dataframe['close'].pct_change(periods=pct_change_window_size)
   if (after_log):
     dataframe['log_return']        = dataframe['close'] - dataframe['close'].shift(1)
   else:
@@ -91,20 +92,24 @@ def GetNormalizeData(dataframe,normalization_method):
         NormalizedDf = df_normalize
 
     elif normalization_method==NormalizationMethod.RegL2Norm:
+        print("RegL2Norm normalization")
         for column in dataframe.columns:
             df_col_reshape = dataframe[column].values.reshape(-1, 1)
             dataframe[column] = preprocessing.normalize(df_col_reshape, norm='l2')
         NormalizedDf = dataframe
     elif normalization_method==NormalizationMethod.simple:
+        print("simple normalization")
         NormalizedDf = dataframe/df2Norm_OnlyTrain.ix[0] #executed in c lower level while a loop on all symbols executed in higher levels
 
     elif normalization_method==NormalizationMethod.RobustScaler:
+        print("RobustScaler normalization")
         df_col_reshape    = dataframe.values.reshape(-1, 1)
         df2Norm_OnlyTrain = df2Norm_OnlyTrain.values.reshape(-1, 1)
         transformer = preprocessing.RobustScaler().fit(df2Norm_OnlyTrain)
         dataframe[column] = transformer.transform(df_col_reshape)
         NormalizedDf = dataframe
     elif normalization_method==NormalizationMethod.Naive:
+        print("naive normalization")
         NormalizedDf = dataframe/300  #Try normalize the data simply by dividing by  a large number (200/300) so the weights won't be too big. Because mean & std keep changing when using over live trade
     else: #do nothing
         print("no normalization")
@@ -162,37 +167,24 @@ def GetTargetData(df,prediction_method,num_of_periods_for_item):
         #    y_data = df['close'].rolling(center=False,window=3).mean()
 
     elif (prediction_method ==  PredictionMethod.binary):
-        y_data = df['target_bool']
+        y_data = df[['Return_pct_change']]
 
     elif (prediction_method ==  PredictionMethod.MultiClass):
         window = 3
         invalid_data_size = window
+        threshold = 0.01
+        y_data = df['Return_pct_change'].copy()
+        y_data.loc[df['Return_pct_change'] < 0] = ConfidenceAreas.drop_low
+        y_data.loc[df['Return_pct_change'] < -threshold] = ConfidenceAreas.drop_high
+        y_data.loc[df['Return_pct_change'] > 0] = ConfidenceAreas.rise_low
+        y_data.loc[df['Return_pct_change'] > threshold] = ConfidenceAreas.rise_high
 
-        # rise, drop, rise_low, drop_low
-        print(df['close'].head(n=10))
-        s0_close  = np.asarray(df['close'][0:-3])
-        s1_close  = np.asarray(df['close'][1:-2])
-        s2_close  = np.asarray(df['close'][2:-1])
-        s3_close  = np.asarray(df['close'][3:])
-
-        s1_rise = s1_close > s0_close
-        s2_rise = s2_close > s1_close
-        s3_rise = s3_close > s2_close
-
-        s1_drop = 1 - s1_rise
-        s2_drop = 1 - s2_rise
-        s3_drop = 1 - s3_rise
-
-        rise_high =  int(ConfidenceAreas.rise_high) * (np.logical_and(np.logical_and(s3_rise, s2_rise), s1_rise))
-        rise_low  =  int(ConfidenceAreas.rise_low)  * (np.logical_and((1-rise_high), s1_rise))
-
-        drop_high =  int(ConfidenceAreas.drop_high) * (np.logical_and(np.logical_and(s3_drop, s2_drop), s1_drop))
-        drop_low  =  int(ConfidenceAreas.drop_low)  * (np.logical_and((3-drop_high), s1_drop))
-
-        y_data = rise_high + rise_low + drop_high + drop_low
-
+        #print(y_data.head(n=10))
         y_data    = y_data.astype(int)
-        y_data_df = pd.DataFrame(y_data, columns=['label'])
+        #y_data.columns = ['MultiLabel']
+        #print(y_data.head(n=10))
+        #print(y_data.groupby('MultiLabel').size())
+
 
     elif (prediction_method ==  PredictionMethod.pct_change):
         invalid_data_size = 0
@@ -234,7 +226,15 @@ def GetTargetData(df,prediction_method,num_of_periods_for_item):
 
     return  x_data, x_history_data, y_data
 
-def ConstructTestData(df, model_params,test_train_split):
+def GetDataVal(Data,only_train):
+    if (only_train):
+        x_train,y_history,y_train,x_test,y_test = Data['X'],Data['y_history'],Data['y'],[],[]
+    else:
+        x_train,y_history,y_train,x_test,y_test = Data['x_train'],Data['y_history'],Data['y_train'],Data['x_ho_data'],Data['y_ho_data']
+
+    return x_train,y_history,y_train,x_test,y_test
+
+def ConstructTestData(df, model_params,test_train_split,train_data_precentage):
     logging.debug("ConstructTestData : ")
     logging.debug("pre normalization df : ")
 
@@ -255,8 +255,6 @@ def ConstructTestData(df, model_params,test_train_split):
 
     if (test_train_split == True):
         #split to test and train data
-
-        train_data_precentage = model_params.train_data_precentage
 
         train_data_length = int(train_data_precentage * len(x_data))
         logging.debug("train_data_length: " + str(train_data_length))

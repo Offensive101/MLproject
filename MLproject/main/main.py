@@ -82,6 +82,7 @@ from blaze.expr.expressions import shape
 #from sklearn.ensemble.tests.test_weight_boosting import y_regr
 from sklearn import preprocessing
 from sqlalchemy.sql.expression import false
+from pytrends.request import TrendReq
 
 ################################################################################
 ################################################################################
@@ -93,11 +94,10 @@ def TrainMyModel(CurrStockDataFrame,CurrStockDataFrame_branch,configuration_list
 
     curr_config = configuration_list
 
-    real_value,predictad_value,confidence_vector,best_config = RunNetworkArch(CurrStockDataFrame,CurrStockDataFrame_branch, curr_config)
+    real_value,predictad_value,confidence_vector,best_config,prediction_summary = RunNetworkArch(CurrStockDataFrame,CurrStockDataFrame_branch, curr_config)
 
     error = abs((predictad_value - real_value)/real_value)*100
     logging.info("error mean simple: " + str(error.mean()))
-
 
     '''
     calculating stats considering usage of confidence and without
@@ -136,74 +136,9 @@ def TrainMyModel(CurrStockDataFrame,CurrStockDataFrame_branch,configuration_list
     #pd.set_option('display.max_columns', 30)
     #print("prediction_stats MASTER network only")
 
-    real_close_values = real_value if curr_config.normalization_method!=NormalizationMethod.Naive else 300*real_value
-    pred_close_values = predictad_value if curr_config.normalization_method!=NormalizationMethod.Naive else 300*predictad_value
-
-    prediction_stats_df = CalcSt(real_close_values,pred_close_values,plot_buy_decisions = True).loc[0]
-    #print(prediction_stats_df)
-
-    buy_decision_summary = pd.DataFrame(columns=['close_values','predicted_price','buy_decision','real_buy_decision'])
-
-    pred_buy_decision = GetBuyVector(predictad_value)
-    real_buy_decision = GetBuyVector(real_value)
-
-    buy_decision_summary['close_values']      = real_close_values[1:]
-    buy_decision_summary['predicted_price']   = pred_close_values[0:-1]
-    buy_decision_summary['real_buy_decision'] = real_buy_decision
-    buy_decision_summary['buy_decision']      = pred_buy_decision
-
-    buy_decision_summary_df = pd.DataFrame(columns=[curr_config.stock_name])
-    buy_decision_summary_df = buy_decision_summary_df.append(buy_decision_summary, ignore_index=True)
-    #buy_decision_summary['good_decision']     = pred_buy_decision==real_buy_decision
-
-    def color_bad_decision(val):
-        #copy df to new - original data are not changed
-        df = val.copy()
-        #select all values to default value - red color
-        df[['buy_decision']] = 'red'
-        #overwrite values green color
-        df.loc[df['good_decision'] == True, 'buy_decision'] = 'green'
-        return df
-
-    #buy_decision_summary = buy_decision_summary.style.apply(color_bad_decision, axis=None)
-    #print(buy_decision_summary)
-    def GetBalanceOverTime(real_close_values,buy_vector,curr_stock):
-        init_balance = 1
-
-        today_real_value    = real_close_values[0:-1]
-        tommorow_real_value = real_close_values[1:]
-        real_buy_vector     = GetBuyVector(real_close_values)
-
-        curr_balance = init_balance
-        opt_balance = init_balance
-
-        balance_per_day = []
-        opt_balance_per_day = []
-
-        for ind,val in enumerate(today_real_value):
-            curr_balance = curr_balance * (tommorow_real_value[ind]/today_real_value[ind]) * buy_vector[ind] + curr_balance * (1 - buy_vector[ind])
-            balance_per_day.append(curr_balance)
-
-            opt_balance = opt_balance * (tommorow_real_value[ind]/today_real_value[ind]) * real_buy_vector[ind] + opt_balance * (1 - real_buy_vector[ind])
-            opt_balance_per_day.append(opt_balance)
-
-        fig = plt.figure()
-        ax1 = fig.add_subplot(2,1,1)
-        ax1.plot(balance_per_day)
-        ax1.plot(opt_balance_per_day,color='g' , label = 'Maximum gain graph')
-        ax1.set_title('balance over time for ' + curr_stock)
-        ax1.set_xlabel('time-line')
-        ax1.set_ylabel('balance')
-
-        ax2 = fig.add_subplot(2,1,2)
-        ax2.plot(today_real_value,'--',color='y' , label = 'real graph')
-        ax2.set_xlabel('time-line')
-        ax2.set_ylabel('stock value')
-        ax2.set_title('real graph for ' +   curr_stock)
-        fig.savefig('balance over time for ' + curr_stock + '.png')
-
-    GetBalanceOverTime(real_close_values,pred_buy_decision,curr_config.stock_name)
     #TODO - maybe we want to return a different error here? from the statistics block
+    prediction_stats_df     = prediction_summary['stats']
+    buy_decision_summary_df = prediction_summary['buy_summary']
     print(prediction_stats_df)
     return best_config,prediction_stats_df,buy_decision_summary_df
 
@@ -212,7 +147,6 @@ def TrainMyModel(CurrStockDataFrame,CurrStockDataFrame_branch,configuration_list
 '''
 ##########################################################################
 '''
-
 if __name__ == '__main__':# needed due to: https://github.com/pytorch/pytorch/issues/494
     initialize_logger(r'C:\Users\mofir\egit-master\git\egit-github\MLproject')
 
@@ -222,7 +156,16 @@ if __name__ == '__main__':# needed due to: https://github.com/pytorch/pytorch/is
     SaveTrainedModel = False #use when we want to train over already trained model
 
     print ('hello all, todays date & time is: ' + time.strftime("%x") + ' ' + str(time.strftime("%H:%M:%S")))
+    '''
+    pytrend = TrendReq()
+    pytrend.build_payload(kw_list=['stock'],geo='US')
 
+    related_queries = pytrend.related_queries()
+    for value in related_queries.values():
+        print(value['top'])
+        print(value['top'].columns.values)
+        i = i+1
+    '''
     '''
     ###################################defining model parameters#############################################
     '''
@@ -303,7 +246,7 @@ if __name__ == '__main__':# needed due to: https://github.com/pytorch/pytorch/is
             best_config,stats_summary,buy_decision_summary = TrainMyModel(CurrStockDataFrame,CurrStockDataFrame_branch,config_model_default, stat_params)
 
         print(best_config)
-        save_config = best_config.copy()
+        save_config = best_config.__dict__.copy()
         save_config['feature_list'] = best_feature_list
 
         stock_name = stock_list[i]

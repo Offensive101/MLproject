@@ -26,6 +26,8 @@ from Statistics.CalculateStats import GetBuyVector
 from Statistics.CalculateStats import GetProfit
 from Statistics.CalculateStats import AvgGain
 
+from PriceBasedPrediction.RunsParameters import LossFunctionMethod
+
 from utils.loggerinitializer import *
 from scipy.fftpack.basic import _fix_shape
 
@@ -268,7 +270,7 @@ class PnLLoss:
 # Train the model
 class da_rnn(nn.Module):
     def __init__(self, input_size, encoder_hidden_size = 64, decoder_hidden_size = 64, T = 10, features_num= 1,
-                 learning_rate = 0.01, batch_size = 128, num_epochs = 10, lstm_dropout = 0, parallel = False, debug = False):
+                 learning_rate = 0.01, batch_size = 128, num_epochs = 10, lstm_dropout = 0, loss_method = LossFunctionMethod.mse, parallel = False, debug = False):
         super(da_rnn, self).__init__()
         self.T = T+1
         self.logger = logging
@@ -277,6 +279,7 @@ class da_rnn(nn.Module):
         self.batch_size = batch_size
         self.num_epochs = num_epochs
         self.learning_rate = learning_rate
+        self.loss_method = loss_method
 
         self.encoder = encoder(input_size = input_size, hidden_size = encoder_hidden_size, T = self.T, features_num=features_num,
                               logger = logger, lstm_dropout = lstm_dropout)#.cuda()
@@ -293,17 +296,24 @@ class da_rnn(nn.Module):
         self.decoder_optimizer = optim.Adam(params = filter(lambda p: p.requires_grad, self.decoder.parameters()),
                                            lr = learning_rate)
 
-    def Train(self, X_train, y_history,y_train, X_test,y_test,use_pnl_loss = False,plot_results = True,curr_stock = 'na'):
+    def Train(self, X_train, y_history,y_train, X_test,y_test,plot_results = True,curr_stock = 'na'):
         #X_train,y_history has to come in as a DF
         logging.debug("**** in Dual LSTM train *****")
         train_size = X_train.shape[0]
-
+        loss_method = self.loss_method
         iter_per_epoch = int(np.ceil(train_size * 1. / self.batch_size))
 
         self.iter_losses = np.zeros(self.num_epochs * iter_per_epoch)
         self.epoch_losses = np.zeros(self.num_epochs)
 
-        self.loss_func = PnLLoss() if use_pnl_loss==True else nn.MSELoss()
+        if (loss_method==LossFunctionMethod.mse):
+            self.loss_func = nn.MSELoss()
+        elif (loss_method==LossFunctionMethod.pnl):
+            self.loss_func = PnLLoss()
+        elif (loss_method==LossFunctionMethod.BCELoss):
+            self.loss_func = nn.BCELoss()
+        else:
+            self.loss_func =nn.MSELoss()
 
         n_iter = 0
         logging.info("learning_rate: " + str(self.learning_rate))
@@ -328,7 +338,7 @@ class da_rnn(nn.Module):
                 x_curr_train = torch.unsqueeze(x_curr_train, 1)
                 #y_history    = torch.unsqueeze(y_history, 2)
 
-                loss = self.train_iteration(x_curr_train, y_curr_history, y_curr_target,use_pnl_loss=use_pnl_loss)
+                loss = self.train_iteration(x_curr_train, y_curr_history, y_curr_target)
                 self.iter_losses[i * iter_per_epoch + int(j / self.batch_size)] = loss
                 #if (j / self.batch_size) % 50 == 0:
                 #    self.logger.info("Epoch %d, Batch %d: loss = %3.3f.", i, j / self.batch_size, loss)
@@ -348,7 +358,7 @@ class da_rnn(nn.Module):
                 logging.info("Epoch %d, loss: %3.4f.", i, self.epoch_losses[i])
 
             if (plot_results==True):
-                if (i % 100 == 0) and i > 0:#TODO - can remove, takes running time
+                if (i % 1000 == 0) and i > 0:
                     #y_train_pred = self.Predict(on_train = True)\
                     y_test_pred = self.Predict(X_test,y_test,on_train = False)
                     j=0
@@ -366,19 +376,22 @@ class da_rnn(nn.Module):
                     #plt.plot(range(self.T , len(y_train_pred) + self.T), y_train_pred, label = 'Predicted - Train')
                     #plt.plot(range(self.T + len(y_test_pred) , len(y_all) + 1), y_test_pred, label = 'Predicted - Test')
 
-                    ax.set_title("epoch of : " + str(i) + "learning rate of: " + str(self.learning_rate))
+                    ax.set_title("epoch of : " + str(i) + " learning rate of " + str(self.learning_rate))
                     ax.legend(loc = 'upper left')
-                    fig.savefig(curr_stock + ' train with test pred timeline, for epoch: ' + str(i) + '.png')
+                    epoch_str = curr_stock + ' ' + str(i)
+                    fig.savefig(epoch_str + ' train with test pred time-line' + '.png')
                     #plt.show(block=False)
             #if self.epoch_losses[i] < 0.0001:
             #    break
 
         if (plot_results==True):
             plt.figure()
-            plt.plot(self.epoch_losses[i], label = "epoch training losses")
-            plt.savefig(curr_stock + 'losses as a function of epochs' + '.png')
+            print(self.epoch_losses[500:])
+            plt.plot(self.epoch_losses[500:], label = "epoch training losses")
+            plt.title(curr_stock + " losses as a function of epochs")
+            plt.savefig(curr_stock + ' losses as a function of epochs' + '.png')
 
-    def train_iteration(self, x_train, y_history, y_target,use_pnl_loss):
+    def train_iteration(self, x_train, y_history, y_target):
         self.encoder_optimizer.zero_grad()
         self.decoder_optimizer.zero_grad()
 

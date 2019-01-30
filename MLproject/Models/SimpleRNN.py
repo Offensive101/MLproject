@@ -137,10 +137,12 @@ def Train(input_size, hidden_size, output_size, train_loader,file_path,learning_
         steps = np.linspace(epoch*predictions_for_chart.shape[0],
                             (epoch+1)*predictions_for_chart.shape[0],
                             predictions_for_chart.shape[0])
-        plt.plot(steps, predictions_for_chart, 'r-')
-        plt.plot(steps, correct_values_for_chart, 'b-')
-        plt.draw()
-        plt.pause(0.05)
+        fig = plt.figure()
+        ax = fig.add_subplot(2,1,1)
+        ax.plot(steps, predictions_for_chart, 'r-')
+        ax.plot(steps, correct_values_for_chart, 'b-')
+        #plt.draw()
+        #plt.pause(0.05)
         epoch_step_time.append(time.time() - epoch_start_t0)
 
 
@@ -150,8 +152,8 @@ def Train(input_size, hidden_size, output_size, train_loader,file_path,learning_
     train_total_time = train_start_t0 - time.time()
     torch.save(model.state_dict(), file_path)
 
-    plt.show()
-    plt.savefig('true and pred values as a function of time' + '.png')
+    #plt.show(block = False)
+    fig.savefig('true and pred values as a function of time' + '.png')
 
     logging.info("train_total_time: ")
     logging.info(train_total_time)

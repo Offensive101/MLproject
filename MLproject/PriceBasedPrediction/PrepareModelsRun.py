@@ -7,10 +7,13 @@ Created on Jan 13, 2019
 import torch
 import numpy as np
 import pandas as pd
+from pandas import ExcelWriter
 
 from PriceBasedPrediction.RunsParameters import NetworkModel
 from PriceBasedPrediction.RunsParameters import LossFunctionMethod
-from PriceBasedPrediction.PrepareData import ConstructTestData,CreateDataset
+from PriceBasedPrediction.RunsParameters import objectview
+
+from PriceBasedPrediction.PrepareData import ConstructTestData,CreateDataset,GetDataVal
 from utils.loggerinitializer import *
 
 from Models import SimpleRNN, Dual_Lstm_Attn
@@ -20,6 +23,7 @@ from Models import GeneralModelFn
 
 from PriceBasedPrediction.RunsParameters import PredictionMethod,NormalizationMethod
 from PriceBasedPrediction.PrepareData import ConfidenceAreas
+from Statistics.CalculateStats import CalculateAllStatistics as CalcSt
 
 from FeatureBuilder import stat_features
 
@@ -37,6 +41,13 @@ import scipy.optimize as spo
 ####################################
 import matplotlib
 from matplotlib import pyplot as plt
+####################################
+import sklearn.metrics
+from sklearn.model_selection import ParameterGrid
+from sklearn.model_selection import KFold
+from Statistics.CalculateStats import GetBuyVector
+from Statistics.CalculateStats import GetProfit
+from Statistics.CalculateStats import AvgGain
 ####################################
 def GetEnsembleLearnersPred(learners_df,y_test, type = 'reg'):
     methods_list = ['bagging, stacking']
@@ -103,24 +114,128 @@ def GetEnsembleLearnersPred(learners_df,y_test, type = 'reg'):
 
     return pred_df
 
-def TrainSimpleRNN(x_train,y_train,model_params,file_path):
-    #print(x_train)
-    #print(y_train)
+
+def TuneSimpleRNN(model_params,clf_type,X, y,file_path, cv=2):
+
+    kf = KFold(n_splits=cv)
+
+    grid = ParameterGrid(model_params.__dict__)
+    best_error = np.inf
+    best_error_slope = np.inf
+    best_profit = 0
+
+    error_slope_list = []
+    error_list = []
+    profit_list = []
+    params_list = []
+
+  #X_df = pd.DataFrame(X)
+  #y_df = pd.DataFrame(y)
+    total_params = len(grid)
+    p = 0
+
+    for params in grid:
+        print("parameters iter in RNN GridSearch is: " + str(p) + " out of: " + str(total_params))
+        print(params)
+        p = p+1
+        profit = 0
+        error = 0
+        error_slope = 0
+        params = objectview(params)
+        for train_index, test_index in kf.split(X):
+            #X_train, X_test = X_df.iloc[train_index], X_df.iloc[test_index]
+            #y_train, y_test = y_df.iloc[train_index], y_df.iloc[test_index]
+            X = pd.DataFrame(X)
+            X_train, X_test = X.iloc[train_index], X.iloc[test_index] #np.take(X, train_index,out=new_shape), np.take(X, test_index)
+            y_train, y_test = np.take(y, train_index), np.take(y, test_index)
+            X_train, X_test = X_train.values,X_test.values
+            train_dataset = CreateDataset(X_train,y_train)
+            train_loader = DataLoader(dataset=train_dataset, batch_size=params.batch_size, shuffle=False, num_workers=1)
+
+            input_size  = X_train.shape[1]
+            output_size = y_train.ndim
+
+            SimpleRNN.Train(input_size, params.hidden_layer_size, output_size,train_loader,file_path,params.learning_rate,params.num_epochs)
+
+            test_dataset = CreateDataset(X_test,y_test)
+            test_loader = DataLoader(dataset=test_dataset, batch_size=params.batch_size, shuffle=False, num_workers=0)
+            loss_fn = GeneralModelFn.loss_fn
+            metrics = GeneralModelFn.metrics
+            model = RnnSimpleModel(input_size = input_size, rnn_hidden_size = params.hidden_layer_size, output_size = output_size)
+
+            y_pred, evaluation_summary = SimpleRNN.Predict(model,loss_fn,test_loader, metrics, cuda = False)
+            #print(evaluation_summary)
+
+            if (clf_type=='cat'):
+                y_error = np.equal(y_pred,y_test)
+                error = error + y_error.sum()/len(y_test)
+            else:
+                buy_vector  = GetBuyVector(y_pred)
+                curr_profit = AvgGain(y_test,buy_vector)
+
+                y_previous_true = y_test[0:-1]
+                y_current_true  = y_test[1:]
+                y_previous_pred = y_pred[0:-1]
+                y_current_pred  = y_pred[1:]
+
+                y_true_slope = y_current_true > y_previous_true
+                y_pred_slope = y_current_pred > y_previous_pred
+
+                y_pred_direction_false = y_true_slope != y_pred_slope
+
+                error_slope = error_slope + y_pred_direction_false.sum()
+                error = error + sklearn.metrics.mean_squared_error(y_test,y_pred)
+                profit = profit + curr_profit
+                print("curr profit is: " + str(curr_profit))
+        if error < best_error:
+            best_params = params
+            best_error = error
+
+        if error_slope < best_error_slope:
+            best_params_slope = params
+            best_error_slope = error_slope
+
+        if profit > best_profit:
+            best_params_profit = params
+            best_profit = profit
+
+        error_slope_list.append(error_slope)
+        error_list.append(error)
+        profit_list.append(profit)
+        params_list.append(params)
+
+    df_err_summary = pd.DataFrame()
+    df_err_summary['parameters'] = params_list
+    df_err_summary['error'] = error_list
+    df_err_summary['slope_error'] = error_slope_list
+    df_err_summary['profit'] = profit_list
+
+    return best_params,best_params_slope,best_params_profit,df_err_summary
+
+def TrainSimpleRNN(x_train,y_train,model_params,clf_type,file_path,general_params):
+
+    if (general_params.tune_needed == True):
+        logging.info("starts tuning parameters RNN.....")
+        best_params,best_params_slope,best_params_profit,df_err_summary = TuneSimpleRNN(model_params,clf_type,x_train, y_train,file_path, cv=2)
+        my_best_params = best_params_profit
+
+        writer = ExcelWriter(r"rnn_tune_results.xlsx")
+        df_err_summary.to_excel(writer, startrow=0,startcol=0)
+        writer.save()
+        writer.close()
+
+    else:
+        my_best_params = model_params
+
     train_dataset = CreateDataset(x_train,y_train)
-    #print("train data size is: " + str(train_dataset.len))
-    train_loader = DataLoader(dataset=train_dataset, batch_size=model_params.batch_size, shuffle=False, num_workers=1)
-
+    train_loader = DataLoader(dataset=train_dataset, batch_size=my_best_params.batch_size, shuffle=False, num_workers=1)
     input_size  = x_train.shape[1]
-    train_size  = x_train.shape[0]
-    hidden_size = model_params.hidden_layer_size
     output_size = y_train.shape[1]
+    SimpleRNN.Train(input_size, my_best_params.hidden_layer_size, output_size,train_loader,file_path,my_best_params.learning_rate,my_best_params.num_epochs)
+    return my_best_params
 
-    #rnn_clf = classifer(learning_rate = 0.01, batch_size = 128,
-    #          parallel = False, debug = False)
 
-    SimpleRNN.Train(input_size, hidden_size, output_size,train_loader,file_path,model_params.learning_rate,model_params.num_epochs)
-
-def PredictSimpleRNN(x_test,y_test,model_params,file_path):
+def PredictSimpleRNN(x_test,y_test,model_params,use_cuda,file_path):
     print("hello from PredictSimpleRnn")
     test_dataset = CreateDataset(x_test,y_test)
     test_loader = DataLoader(dataset=test_dataset, batch_size=model_params.batch_size, shuffle=False, num_workers=0)
@@ -139,14 +254,21 @@ def PredictSimpleRNN(x_test,y_test,model_params,file_path):
     loss_fn = GeneralModelFn.loss_fn
     metrics = GeneralModelFn.metrics
 
-    labels_prediction_total, evaluation_summary = SimpleRNN.Predict(model,loss_fn,test_loader, metrics, cuda = model_params.use_cuda)
+    labels_prediction_total, evaluation_summary = SimpleRNN.Predict(model,loss_fn,test_loader, metrics, cuda = use_cuda)
+
+    fig = plt.figure()
+    ax1 = fig.add_subplot(2,1,1)
+    ax1.plot(evaluation_summary)
+    ax1.set_title('losses for test RNN ')
+    fig.savefig('losses for test RNN' + '.png')
+
     return (labels_prediction_total)
 
-def TrainPredictDualLSTM(x_train,y_history,y_train,x_test,y_test,model_params,file_path):
+def TrainPredictDualLSTM(x_train,y_history,y_train,x_test,y_test,model_params,file_path,general_params):
     logging.info("hello from TrainPredictDualLSTM")
     print("hello from TrainPredictDualLSTM")
 
-    if (model_params.tune_needed == True):
+    if (general_params.tune_needed == True):
         logging.info("starts tuning parameters.....")
         DualLSTM_clf_tune = Dual_Lstm_Attn.da_rnn(input_size = x_train.shape[1])
 
@@ -156,9 +278,13 @@ def TrainPredictDualLSTM(x_train,y_history,y_train,x_test,y_test,model_params,fi
                                                                                     DualLSTM_clf_tune,
                                                                                     x_train,y_history,
                                                                                     y_train,input_size = 1,
-                                                                                    arguments=model_params.tune_HyperParameters,
-                                                                                    curr_stock = model_params.stock_name,
+                                                                                    arguments=model_params.__dict__,
+                                                                                    curr_stock = general_params.stock_name,
                                                                                     cv=2)
+        writer = ExcelWriter(r"LSTM_tune_results.xlsx")
+        df_err_summary.to_excel(writer, startrow=0,startcol=0)
+        writer.save()
+        writer.close()
 
         my_best_params = my_best_params_profit
         logging.info("summary profit for all parameters")
@@ -181,11 +307,11 @@ def TrainPredictDualLSTM(x_train,y_history,y_train,x_test,y_test,model_params,fi
         with open('lstmDual_bestParams.pickle', 'wb') as output_file:
             pickle.dump(my_best_params,output_file)
 
-    elif (model_params.load_best_params == True):
+    elif (general_params.load_best_params == True):
         with open('lstmDual_bestParams.pickle', 'rb') as f:
             my_best_params = pickle.load(f)
     else:
-        my_best_params = model_params.tune_HyperParameters
+        my_best_params = model_params.__dict__
 
 
     logging.info("starts training: Dual_Lstm_Attn.da_rnn")
@@ -194,22 +320,22 @@ def TrainPredictDualLSTM(x_train,y_history,y_train,x_test,y_test,model_params,fi
     clf_DualLSTM = Dual_Lstm_Attn.da_rnn(input_size = input_size)
     clf_DualLSTM.__init__(input_size,**my_best_params)
 
-    pnl_loss =  model_params.loss_method == LossFunctionMethod.pnl
+    #pnl_loss =  model_params.loss_method == LossFunctionMethod.pnl
 
     logging.debug(x_train.shape)
     logging.debug(y_train.shape)
 
     x_train   = pd.DataFrame(x_train)
     y_history = pd.DataFrame(y_history)
-    if (model_params.only_train==False):
+    if (general_params.only_train==False):
         plot_results = True
         x_test    = pd.DataFrame(x_test)
     else:
         plot_results = False
 
-    if (model_params.train_needed == True):
-        clf_DualLSTM.Train(x_train,y_history,y_train, x_test,y_test,use_pnl_loss = pnl_loss,plot_results=plot_results,curr_stock = model_params.stock_name)
-        if (model_params.SaveTrainedModel==True):
+    if (general_params.train_needed == True):
+        clf_DualLSTM.Train(x_train,y_history,y_train, x_test,y_test,plot_results=plot_results,curr_stock = general_params.stock_name)
+        if (general_params.SaveTrainedModel==True):
                 torch.save(clf_DualLSTM.state_dict(), file_path)
     else:
         try:
@@ -217,7 +343,7 @@ def TrainPredictDualLSTM(x_train,y_history,y_train,x_test,y_test,model_params,fi
         except:
             print("error!! didn't find trained model")
 
-    if (model_params.only_train==False):
+    if (general_params.only_train==False):
         logging.info("hello from PredictDualLSTM")
         y_pred = clf_DualLSTM.Predict(x_test,y_test)
         logging.debug(y_test.shape)
@@ -271,9 +397,9 @@ def TrainPredictRandForest(x_train,y_train,x_test,y_test,model_params,file_path)
 
     if (model_params.tune_branch_needed == True):
         if (model_params.prediction_method==PredictionMethod.MultiClass):
-            arguments = {'n_estimators': [100],'max_depth':[6,7,8], 'max_features':[None], 'criterion':["entropy"]}#gini
+            arguments = {'n_estimators': [100],'max_depth':[6,10,18], 'max_features':[None], 'criterion':["entropy"]}#gini
         else:
-            arguments = {'n_trees': [80],'max_depth':[5,4], 'n_features':[None,0.5], 'weight_type':["sub","div"]}
+            arguments = {'n_trees': [80],'max_depth':[6,10,18], 'n_features':[None,0.5], 'weight_type':["sub","div"]}
 
         GS = GridSearchCV(estimator=RFC_classifier,param_grid=arguments, cv=5)
         GS.fit(x_train,y_train)
@@ -287,9 +413,9 @@ def TrainPredictRandForest(x_train,y_train,x_test,y_test,model_params,file_path)
         print(gs_cv_results['std_test_score'])
     else:
         if (model_params.prediction_method==PredictionMethod.MultiClass):
-            sklearn_best_params = {'n_estimators': 100,'max_depth':6, 'max_features':None, 'criterion':"entropy"}
+            sklearn_best_params = {'n_estimators': 100,'max_depth':15, 'max_features':None, 'criterion':"entropy"}
         else:
-            sklearn_best_params = {'n_trees': [80],'max_depth':[5], 'n_features':[None], 'weight_type':["sub"]}
+            sklearn_best_params = {'n_trees': [80],'max_depth':[15], 'n_features':[None], 'weight_type':["sub"]}
 
     RFC_best = RFC_classifier.set_params(**sklearn_best_params)
 
@@ -327,8 +453,16 @@ def TrainPredictRandForest(x_train,y_train,x_test,y_test,model_params,file_path)
         plt.title('RFC - test data vs. strong buy advice')
         plt.show(block=False)
 
+    fig = plt.figure()
+    y_all = y_test #np.concatenate((y_train, y_test)) # y_test
+    ax = fig.add_subplot(2,1,1)
+    ax.plot(y_all, label = "True")
+    ax.plot(y_pred_confidence, label = 'Predicted - Test')
+    ax.set_title("RFC prediction : test vs. pred")
+    fig.savefig('RFC prediction test vs train' + '.png')
+
     y_pred = y_pred_confidence
-    return y_pred
+    return y_pred,RFC_best
 
 
 
@@ -336,51 +470,160 @@ def TrainPredictRandForest(x_train,y_train,x_test,y_test,model_params,file_path)
 
 #class Statistics_Func():
 
+def GetPredictionSummary(curr_config,general_config,curr_model,target_type,real_close_value,real_value,predictad_value):
+
+    if (target_type == 'reg'):
+        real_value = real_value.reshape(1,-1)[0]
+        real_values_adj = real_value if curr_config.normalization_method!=NormalizationMethod.Naive else 300*real_value
+        pred_values_adj = predictad_value if curr_config.normalization_method!=NormalizationMethod.Naive else 300*predictad_value
+        real_values_adj = real_values_adj
+        pred_values_adj = pred_values_adj
+    else:
+        real_values_adj = real_value
+        pred_values_adj = predictad_value
+
+    prediction_stats_df = CalcSt(real_close_value,real_values_adj,pred_values_adj,target_type,plot_buy_decisions = True).loc[0]
+    #print(prediction_stats_df)
+
+    buy_decision_summary = pd.DataFrame(columns=['close_values','predicted_price','buy_decision','real_buy_decision'])
+
+    pred_buy_decision = GetBuyVector(predictad_value)
+    real_buy_decision = GetBuyVector(real_value)
+    print(real_values_adj[0:5])
+    print(pred_values_adj[0:5])
+    print(real_buy_decision[0:5])
+    print(pred_buy_decision[0:5])
+
+    buy_decision_summary['close_values']      = real_values_adj[:-1]
+    buy_decision_summary['predicted_price']   = pred_values_adj[:-1]
+    buy_decision_summary['real_buy_decision'] = real_buy_decision
+    buy_decision_summary['buy_decision']      = pred_buy_decision
+
+    buy_decision_summary_df = pd.DataFrame(columns=[general_config.stock_name])
+    buy_decision_summary_df = buy_decision_summary_df.append(buy_decision_summary, ignore_index=True)
+    #buy_decision_summary['good_decision']     = pred_buy_decision==real_buy_decision
+
+    def color_bad_decision(val):
+        #copy df to new - original data are not changed
+        df = val.copy()
+        #select all values to default value - red color
+        df[['buy_decision']] = 'red'
+        #overwrite values green color
+        df.loc[df['good_decision'] == True, 'buy_decision'] = 'green'
+        return df
+
+    #buy_decision_summary = buy_decision_summary.style.apply(color_bad_decision, axis=None)
+    #print(buy_decision_summary)
+
+    def GetBalanceOverTime(real_close_values,buy_vector,curr_stock,curr_model):
+        init_balance = 1
+
+        today_real_value    = real_close_values[0:-1]
+        tommorow_real_value = real_close_values[1:]
+        real_buy_vector     = GetBuyVector(real_close_values)
+
+        curr_balance = init_balance
+        opt_balance = init_balance
+
+        balance_per_day = []
+        opt_balance_per_day = []
+
+        for ind,val in enumerate(today_real_value):
+            curr_balance = curr_balance * (tommorow_real_value[ind]/today_real_value[ind]) * buy_vector[ind] + curr_balance * (1 - buy_vector[ind])
+            balance_per_day.append(curr_balance)
+
+            opt_balance = opt_balance * (tommorow_real_value[ind]/today_real_value[ind]) * real_buy_vector[ind] + opt_balance * (1 - real_buy_vector[ind])
+            opt_balance_per_day.append(opt_balance)
+
+        fig = plt.figure()
+        ax1 = fig.add_subplot(2,1,1)
+        ax1.plot(balance_per_day)
+        ax1.plot(opt_balance_per_day,color='g' , label = 'Maximum gain graph')
+        ax1.set_title(curr_model + ' balance over time for ' + curr_stock)
+        ax1.set_xlabel('time-line')
+        ax1.set_ylabel('balance')
+
+        ax2 = fig.add_subplot(2,1,2)
+        ax2.plot(today_real_value,'--',color='y' , label = 'real graph')
+        ax2.set_xlabel('time-line')
+        ax2.set_ylabel('stock value')
+        ax2.set_title('real graph for ' +   curr_stock)
+        fig.savefig(curr_model + ' balance over time for ' + curr_stock + '.png')
+
+    GetBalanceOverTime(real_close_value,pred_buy_decision,general_config.stock_name,curr_model)
+
+    return prediction_stats_df,buy_decision_summary_df
+
 def RunNetworkArch(df,df_branch, model_params):
     test_train_split = False if model_params.only_train else True #model_params.network_model!=NetworkModel.DualLstmAttn
 
-    DualLSTM_file_path   = 'my_DualLSTM_model.model'
-    simple_rnn_file_path = 'my_simple_rnn_model.model'
-    random_forest_file_path = 'my_simple_rnn_model.model'
+    DualLSTM_file_path      = 'my_DualLSTM_model.model'
+    simple_rnn_file_path    = 'my_simple_rnn_model.model'
+    random_forest_file_path = 'my_RFC_model.model'
 
-    best_config = model_params.tune_HyperParameters
+    best_config = model_params.LSTM_HyperParameters
 
     logging.info("preparing data.....")
-    Data         = ConstructTestData(df, model_params,test_train_split = test_train_split)
-
-    if (model_params.only_train):
-        x_train,y_history,y_train,x_test,y_test = Data['X'],Data['y_history'],Data['y'],[],[]
-    else:
-        x_train,y_history,y_train,x_test,y_test = Data['x_train'],Data['y_history'],Data['y_train'],Data['x_ho_data'],Data['y_ho_data']
 
     if model_params.network_model==NetworkModel.simpleRNN:
-        TrainSimpleRNN(x_train,y_train,model_params,simple_rnn_file_path)
+        RNN_config = model_params.RNN_HyperParameters['ModelParams']
+        data_params = model_params.RNN_HyperParameters['GeneralParams']
+        rnn_clf_type = 'cat' if (data_params.prediction_method==PredictionMethod.MultiClass) else 'reg'
+
+        Data  = ConstructTestData(df, data_params,test_train_split,model_params.train_data_precentage)
+        x_train,y_history,y_train,x_test,y_test = GetDataVal(Data,only_train=model_params.only_train)
+        real_close_value = df['close'].tail(x_test.shape[0]).tolist()
+
+        RNN_config_best_params = TrainSimpleRNN(x_train,y_train,RNN_config,rnn_clf_type,simple_rnn_file_path,model_params)
         if (model_params.only_train==False):
-            y_pred = PredictSimpleRNN(x_test,y_test,model_params,simple_rnn_file_path)
+            y_pred = PredictSimpleRNN(x_test,y_test,RNN_config_best_params,model_params.use_cuda,simple_rnn_file_path)
+        best_config = RNN_config
+
+        prediction_stats_df,buy_decision_summary_df = \
+        GetPredictionSummary(data_params,model_params,'RNN',rnn_clf_type,real_close_value,y_test,y_pred)
 
     elif model_params.network_model==NetworkModel.RandomForest:
-            y_pred, best_config = TrainPredictRandForest(x_train,y_train,x_test,y_test,model_params,random_forest_file_path)
+        rf_clf_type = 'cat' if (data_params.prediction_method==PredictionMethod.MultiClass) else 'reg'
+        if (model_params.prediction_method==PredictionMethod.MultiClass):
+            arguments = {'n_estimators': [100],'max_depth':[6,10,18], 'max_features':[None], 'criterion':["entropy"]}#gini
+        else:
+            arguments = {'n_trees': [80],'max_depth':[6,10,18], 'n_features':[None,0.5], 'weight_type':["sub","div"]}
 
-    elif model_params.network_model==NetworkModel.simpleLSTM:
-        file_path = 'my_simple_lstm_model.model'
-
-        lstm_classifier = SimpleRNN #TODO - change to simple LSTM
-        lstm_model      = RnnSimpleModel
-        TrainSimpleRNN(x_train,y_train,model_params,file_path,lstm_classifier)
-        if (model_params.only_train==False):
-            y_pred = PredictSimpleRNN(x_test,y_test,model_params,file_path,lstm_classifier,lstm_model)
+        RFR_config = model_params.RFR_HyperParameters['ModelParams']
+        data_params = model_params.RFR_HyperParameters['GeneralParams']
+        Data  = ConstructTestData(df, data_params,test_train_split,model_params.train_data_precentage)
+        x_train,y_history,y_train,x_test,y_test = GetDataVal(Data,only_train=model_params.only_train)
+        real_close_value = df['close'].tail(x_test.shape[0]).tolist()
+        y_pred, best_config = TrainPredictRandForest(x_train,y_train,x_test,y_test,RFR_config,random_forest_file_path)
+        print(y_pred)
+        prediction_stats_df,buy_decision_summary_df = \
+        GetPredictionSummary(data_params,model_params,'RFR',rf_clf_type,real_close_value,y_test,y_pred)
 
     elif model_params.network_model==NetworkModel.DualLstmAttn:
-        y_pred, best_config = TrainPredictDualLSTM(x_train,y_history,y_train,x_test,y_test,model_params,DualLSTM_file_path)
+        DualLstm_config = model_params.LSTM_HyperParameters['ModelParams']
+        data_params = model_params.LSTM_HyperParameters['GeneralParams']
+        lstm_clf_type = 'cat' if (data_params.prediction_method==PredictionMethod.MultiClass) else 'reg'
+        Data  = ConstructTestData(df, data_params,test_train_split,model_params.train_data_precentage)
+        x_train,y_history,y_train,x_test,y_test = GetDataVal(Data, model_params.only_train)
+        real_close_value = df['close'].tail(x_test.shape[0]).tolist()
+        y_pred, best_config = TrainPredictDualLSTM(x_train,y_history,y_train,x_test,y_test,DualLstm_config,DualLSTM_file_path,model_params)
 
+        prediction_stats_df,buy_decision_summary_df = \
+        GetPredictionSummary(data_params,model_params,'LSTM',lstm_clf_type,real_close_value,y_test,y_pred)
 
     elif model_params.network_model==NetworkModel.EnsambleLearners:
         #1. Dual Lstm
-        y_pred_lstm, best_config = TrainPredictDualLSTM(x_train,y_history,y_train,x_test,y_test,model_params,DualLSTM_file_path)
+        print("ensemble learners starts...")
+        print("DualLSTM...")
+        y_pred_lstm, best_config = TrainPredictDualLSTM(x_train,y_history,y_train,x_test,y_test,model_params,DualLSTM_file_path,model_params)
+        lstm_prediction_stats_df,lstm_buy_decision_summary_df = \
+        GetPredictionSummary(DualLstm_config,model_params,'LSTM',lstm_clf_type,y_test,y_pred)
         #2. simple Rnn
+        print("RNN...")
         TrainSimpleRNN(x_train,y_history,y_train,x_test,y_test,model_params,DualLSTM_file_path)
         y_pred_rnn  = PredictSimpleRNN(x_test,y_test,model_params,simple_rnn_file_path)
         #2. RFC/WRC
+        print("RFR...")
         y_pred_rfc,  = TrainPredictRandForest(x_train,y_train,x_test,y_test,model_params,random_forest_file_path)
         #4. linear regressor
 
@@ -405,6 +648,10 @@ def RunNetworkArch(df,df_branch, model_params):
         ax.set_xlabel=("Date")
         ax.set_xlabel=("Price")
 
+        buy_decision_summary_df = pd.DataFrame(columns=[general_config.stock_name])
+        buy_decision_summary_df = buy_decision_summary_df.append(lstm_buy_decision_summary_df, ignore_index=True)
+
+        prediction_stats_df = lstm_prediction_stats_df
     else:
         print("need to add default network")
 
@@ -431,4 +678,10 @@ def RunNetworkArch(df,df_branch, model_params):
         plt.xlabel('time line')
         plt.show(block=False)
     #TODO - maybe worth to run the network on another stock to see if we can use same training for various stocks
-    return y_test.flatten(),y_pred.flatten(),buy_vector_confidence,best_config
+
+    prediction_summary = {
+        'stats': prediction_stats_df,
+        'buy_summary': buy_decision_summary_df
+        }
+
+    return y_test.flatten(),y_pred.flatten(),buy_vector_confidence,best_config,prediction_summary

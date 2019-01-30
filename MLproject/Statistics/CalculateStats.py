@@ -9,6 +9,8 @@ from __future__ import division
 import pandas as pd
 import numpy as np
 
+from PriceBasedPrediction.PrepareData import ConfidenceAreas
+
 import matplotlib
 from matplotlib import pyplot as plt
 
@@ -56,52 +58,48 @@ def GetClassStatList():
     stat_parameters = [attr for attr in all_parameters if not callable(getattr(StatParam, attr)) and not attr.startswith("__")]
     return stat_parameters
 
-def GetBuyVector(y_pred):
+def GetBuyVector(y_pred,target_type = 'reg'):
     #TODO - can do here better with using Network to consider bias?
-    next_predicted_value = y_pred[1:]
-    curr_predicted_value = y_pred[0:-1]
-    buy_vector = next_predicted_value > curr_predicted_value
+    #print(y_pred)
+    if (target_type == 'reg'):
+        next_predicted_value = y_pred[1:]
+        curr_predicted_value = y_pred[0:-1]
+        buy_vector = np.greater(next_predicted_value,curr_predicted_value)
+    else:
+        buy_vector = []
+        for day in y_pred:
+            buy_vector.append((day > int(ConfidenceAreas.rise_low)))
+    #print(buy_vector)
     return buy_vector
 
 def GetProfit(buy_vector, y_true):
     #TODO - can do here better with using Network to consider bias?
     return MeanGain(y_true,buy_vector)
 
-def FalseNegativeRatio(real_value,buy_vector):
+def FalseNegativeRatio(real_value,buy_vector,target_type):
     # rate of FN compared to all Positive days
-    last_value = real_value[0:-1]
-    real_value_shifted = real_value[1:]
-    days_delta_vec = (real_value_shifted - last_value)
-    pos_days_vec = (days_delta_vec > 0)
-    FN_vec = (1-buy_vector) * pos_days_vec
-    return FN_vec.sum()/pos_days_vec.sum()
+    real_buy_vector = GetBuyVector(real_value,target_type)
+    FN_vec = (1-buy_vector) * real_buy_vector
+    return FN_vec.sum()/real_buy_vector.sum()
 
-def FalsePositiveRatio(real_value,buy_vector):
+def FalsePositiveRatio(real_value,buy_vector,target_type):
     # rate of FP compared to all Negative
-    last_value = real_value[0:-1]
-    real_value_shifted = real_value[1:]
-    days_delta_vec = (real_value_shifted - last_value)
-    neg_days_vec = (days_delta_vec <=0)
+    real_buy_vector = GetBuyVector(real_value,target_type)
+    neg_days_vec = 1 - real_buy_vector #(days_delta_vec <=0)
     FP_vec = buy_vector * neg_days_vec
     return FP_vec.sum()/neg_days_vec.sum()
 
-def TrueNegativeRatio(real_value,buy_vector):
-    # rate of FN compared to all Positive days
-    last_value = real_value[0:-1]
-    real_value_shifted = real_value[1:]
-    days_delta_vec = (real_value_shifted - last_value)
-    neg_days_vec = (days_delta_vec <= 0)
-    TN_vec = (1-buy_vector) * neg_days_vec
+def TrueNegativeRatio(real_value,buy_vector,target_type):
+    real_buy_vector = GetBuyVector(real_value,target_type)
+    neg_days_vec = np.invert(real_buy_vector) #(days_delta_vec <= 0)
+    neg_buy_vector = np.invert(buy_vector)
+    TN_vec = neg_buy_vector * neg_days_vec
     return TN_vec.sum()/neg_days_vec.sum()
 
-def TruePositiveRatio(real_value,buy_vector):
-    # rate of FP compared to all Negative
-    last_value = real_value[0:-1]
-    real_value_shifted = real_value[1:]
-    days_delta_vec = (real_value_shifted - last_value)
-    pos_days_vec = (days_delta_vec > 0)
-    TP_vec = buy_vector * pos_days_vec
-    return TP_vec.sum()/pos_days_vec.sum()
+def TruePositiveRatio(real_value,buy_vector,target_type):
+    real_buy_vector = GetBuyVector(real_value,target_type)
+    TP_vec = buy_vector * real_buy_vector
+    return TP_vec.sum()/real_buy_vector.sum()
 
 def MissingBuyInUpRatio(real_value,buy_vector):
     # decision not to buy although we saw an up slope the day before
@@ -137,7 +135,7 @@ def MeanGain(real_value,buy_vector):
     #how much gain in precentage we have achieved
     last_value = real_value[0:-1]
     real_value_shifted = real_value[1:]
-    days_delta_ratio = ((real_value_shifted - last_value)/last_value)
+    days_delta_ratio = np.subtract(real_value_shifted,last_value)/last_value
     gain_vector = buy_vector * days_delta_ratio
     mean_gain = gain_vector.sum()/len(days_delta_ratio)
 
@@ -151,7 +149,6 @@ def AvgGain(real_value,buy_vector):
     today_real_value    = real_value[0:-1]
     tommorow_real_value = real_value[1:]
     opt_buy_vector      = GetBuyVector(real_value)
-
     gain = 1
     opt_gain = 1
 
@@ -176,25 +173,25 @@ def MeanError(real_value,predictad_value):
     error = 100 * abs(values_diff)/real_value
     return error.mean()
 
-def CalculateAllStatistics(real_value,predictad_value,buy_vector = None,plot_buy_decisions = False): #should include in [0] the previous day
-
+def CalculateAllStatistics(real_close_value,real_value,predictad_value,target_type,buy_vector = None,plot_buy_decisions = False): #should include in [0] the previous day
+    print('hello from CalculateAllStatistics...')
+    #real_value = real_value.reshape(1,-1)[0]
     if buy_vector is None:
-        buy_vector = GetBuyVector(predictad_value)
+        buy_vector = GetBuyVector(predictad_value,target_type)
 
     df_prediction_statistics = pd.DataFrame(columns=GetClassStatList())
 
-    df_prediction_statistics.at[0,'true_negative_ratio']      = TrueNegativeRatio(real_value,buy_vector)
-    df_prediction_statistics.at[0,'true_positive_ratio']      = TruePositiveRatio(real_value,buy_vector)
-    df_prediction_statistics.at[0,'false_negative_ratio']     = FalseNegativeRatio(real_value,buy_vector)
-    df_prediction_statistics.at[0,'false_positive_ratio']     = FalsePositiveRatio(real_value,buy_vector)
+    df_prediction_statistics.at[0,'true_negative_ratio']      = TrueNegativeRatio(real_value,buy_vector,target_type)
+    df_prediction_statistics.at[0,'true_positive_ratio']      = TruePositiveRatio(real_value,buy_vector,target_type)
+    df_prediction_statistics.at[0,'false_negative_ratio']     = FalseNegativeRatio(real_value,buy_vector,target_type)
+    df_prediction_statistics.at[0,'false_positive_ratio']     = FalsePositiveRatio(real_value,buy_vector,target_type)
     #df_prediction_statistics.at[0,'missing_buy_in_up_ratio']   = MissingBuyInUpRatio(real_value,buy_vector)
     #df_prediction_statistics.at[0,'false_buy_ratio_in_down']   = FalseBuyInDownRatio(real_value,buy_vector)
-    df_prediction_statistics.at[0,'mean_error']                = MeanError(real_value,predictad_value)
+    df_prediction_statistics.at[0,'mean_error']                = MeanError(real_value,predictad_value) if target_type == 'reg' else None
     #df_prediction_statistics.at[0,'std']                       = 0
-
-    df_prediction_statistics.at[0,'mean_gain']      = MeanGain(real_value,buy_vector)
-    df_prediction_statistics.at[0,'AvgGainEXp']     = AvgGain(real_value,buy_vector)
-    df_prediction_statistics.at[0,'AvgGainEXp_Opt'] = AvgGain(real_value,GetBuyVector(real_value))
+    df_prediction_statistics.at[0,'mean_gain']      = MeanGain(real_close_value,buy_vector)
+    df_prediction_statistics.at[0,'AvgGainEXp']     = AvgGain(real_close_value,buy_vector)
+    df_prediction_statistics.at[0,'AvgGainEXp_Opt'] = AvgGain(real_close_value,GetBuyVector(real_value))
 
     #print(df_prediction_statistics)
 
