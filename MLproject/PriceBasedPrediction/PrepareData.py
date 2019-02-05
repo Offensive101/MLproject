@@ -11,7 +11,12 @@ from utils.loggerinitializer import *
 from sklearn import preprocessing
 from PriceBasedPrediction.RunsParameters import NormalizationMethod
 from PriceBasedPrediction.RunsParameters import PredictionMethod
+from PriceBasedPrediction.RunsParameters import LossFunctionMethod
+
+from FeatureBuilder import stat_features
+
 from enum import Enum
+#from builtins import
 
 class ConfidenceAreas(Enum):
     rise_high  = 1
@@ -55,7 +60,6 @@ def running_average_transform(dataframe, window_size = 5):
   transformed = dataframe.copy()
   transformed = dataframe.rolling(center=False,window=window_size).mean()
   transformed = transformed.iloc[window_size-1:]
-
   return transformed
 
 def GetLogData(dataframe):
@@ -65,15 +69,18 @@ def GetLogData(dataframe):
 
   return transformed
 
-def GetStockReturn(dataframe,after_log = False):
-  pct_change_window_size = 1
-  dataframe['Return_pct_change'] = dataframe['close'].pct_change(periods=pct_change_window_size)
-  if (after_log):
-    dataframe['log_return']        = dataframe['close'] - dataframe['close'].shift(1)
-  else:
-    dataframe['log_return']        = np.log(dataframe['close']) - np.log(dataframe['close'].shift(1))
+def GetStockReturn(dataframe,pct_change_window_size,after_log = False):
+    dataframe['Return_pct_change'] = dataframe['close'].pct_change(periods=pct_change_window_size)
 
-  return dataframe
+    if (after_log):
+        dataframe['log_return']        = dataframe['close'] - dataframe['close'].shift(1)
+    else:
+        dataframe['log_return']        = np.log(dataframe['close']) - np.log(dataframe['close'].shift(1))
+
+    if 'daily_returns' not in dataframe:
+        dataframe['daily_returns'] = stat_features.compute_daily_returns(dataframe['close'],plot_graphs=False)
+
+    return dataframe
 
 def GetBinaryTarget(dataframe):
   dataframe['target_bool'] = 1
@@ -87,7 +94,7 @@ def GetNormalizeData(dataframe,normalization_method):
         # Create the Scaler object
         scaler = preprocessing.StandardScaler()
         std_scale = scaler.fit(df2Norm_OnlyTrain)
-        array_normalize = std_scale.transform(df)
+        array_normalize = std_scale.transform(dataframe)
         df_normalize    = pd.DataFrame(array_normalize,columns = dataframe.columns.values)
         NormalizedDf = df_normalize
 
@@ -118,44 +125,43 @@ def GetNormalizeData(dataframe,normalization_method):
 
     return NormalizedDf
 
-def PreProcessStockData(dataframe,TakeLogData,smooth_graph,normalization_method,BinaryTarget,debug = False):
+def PreProcessStockData(dataframe,TakeLogData,pct_change_window_size,smooth_graph_window,normalization_method,BinaryTarget,debug = False):
 
-  if smooth_graph:
-      Transform_DF = running_average_transform(dataframe, window_size = 5)
-  else:
-      Transform_DF = running_average_transform(dataframe, window_size = 1)
+    Transform_DF = running_average_transform(dataframe, window_size = smooth_graph_window)
 
-  if (TakeLogData == True):
-    Transform_DF = GetLogData(Transform_DF)
+    if (TakeLogData == True):
+        Transform_DF = GetLogData(Transform_DF)
 
-  Transform_DF = GetNormalizeData(Transform_DF,normalization_method)
-  TargetDF = GetStockReturn(Transform_DF,after_log = TakeLogData)
-
-  if (BinaryTarget == True):
-    TargetDF = GetBinaryTarget(TargetDF)
+    Transform_DF = GetNormalizeData(Transform_DF,normalization_method)
+    TargetDF = GetStockReturn(Transform_DF,pct_change_window_size,after_log = TakeLogData)
+    print('PreProcessStockData')
+    #print(TargetDF.head())
+    if (BinaryTarget == True):
+        TargetDF = GetBinaryTarget(TargetDF)
 
 
 
-  if (debug == True):
-    print(dataframe.index.name)
-    print(dataframe.shape)
-    print(dataframe.head())
+    if (debug == True):
+        print(dataframe.index.name)
+        print(dataframe.shape)
+        print(dataframe.head())
 
-    print(Transform_DF.shape)
-    print(Transform_DF.head())
+        print(Transform_DF.shape)
+        print(Transform_DF.head())
 
-    print(TargetDF.shape)
-    print(TargetDF.head())
+        print(TargetDF.shape)
+        print(TargetDF.head())
 
-    ax = dataframe.plot(title='real close prices as a function of time')
-    ax.set_xlabel=("Date")
-    ax.set_xlabel=("Price")
+    #ax = dataframe.plot(title='real close prices as a function of time')
+    #ax.set_xlabel=("Date")
+    #ax.set_xlabel=("Price")
+    #Transform_DF.plot()
+    #plt.show()
 
-    Transform_DF.plot()
+    return TargetDF #.iloc[1:]
 
-  return TargetDF.iloc[1:]
-
-def GetTargetData(df,prediction_method,num_of_periods_for_item):
+def GetTargetData(df,pct_change_window_size,prediction_method,num_of_periods_for_item):
+    x_df = df.copy()
 
     if (prediction_method == PredictionMethod.close):
         invalid_data_size = 1
@@ -163,14 +169,27 @@ def GetTargetData(df,prediction_method,num_of_periods_for_item):
         logging.debug("ConstructTestData: close method")
         y_data = df['close']
 
+        x_df   = x_df.shift(periods=invalid_data_size)
+
+        y_data = y_data.iloc[invalid_data_size:]
+        x_df   = x_df.iloc[invalid_data_size:]
         #if (smooth_graph == True):
         #    y_data = df['close'].rolling(center=False,window=3).mean()
 
     elif (prediction_method ==  PredictionMethod.binary):
-        y_data = df[['Return_pct_change']]
+        invalid_data_size = pct_change_window_size
+        y_data = df['Return_pct_change'].copy()
+        y_data.loc[df['Return_pct_change'] < 0] = 0
+        y_data.loc[df['Return_pct_change'] >= 0] = 1
+        y_data    = y_data.astype(int)
+        y_data = y_data.iloc[pct_change_window_size:]
+
+        x_df   = x_df.shift(periods=pct_change_window_size)
+        x_df   = x_df.iloc[pct_change_window_size:]
 
     elif (prediction_method ==  PredictionMethod.MultiClass):
-        window = 3
+        classes_num = 4
+        window = pct_change_window_size
         invalid_data_size = window
         threshold = 0.01
         y_data = df['Return_pct_change'].copy()
@@ -181,31 +200,71 @@ def GetTargetData(df,prediction_method,num_of_periods_for_item):
 
         #print(y_data.head(n=10))
         y_data    = y_data.astype(int)
+        y_data = y_data.iloc[invalid_data_size:]
+        x_df   = x_df.shift(periods=invalid_data_size)
+        x_df   = x_df.iloc[invalid_data_size:]
+
         #y_data.columns = ['MultiLabel']
         #print(y_data.head(n=10))
-        #print(y_data.groupby('MultiLabel').size())
+        #print('distibution_count of y_test: ')
+        #print(y_data.value_counts())
 
+        #if (loss_fn_method == LossFunctionMethod.multi_class_loss):
+        #    from sklearn.preprocessing import LabelBinarizer
+        #    y_data = LabelBinarizer().fit_transform(y_data.values.ravel().tolist())
+    elif (prediction_method ==  PredictionMethod.slope):
+        invalid_data_size = 0
+        y_data = df['close'].copy()/df['open'].copy()
+        x_df   = x_df.shift(periods=invalid_data_size)
+        y_data = y_data.iloc[invalid_data_size:]
+        x_df   = x_df.iloc[invalid_data_size:]
 
     elif (prediction_method ==  PredictionMethod.pct_change):
-        invalid_data_size = 0
-        y_data = df['Return_pct_change']
+        print("prediction_method Return_pct_change calc..")
+
+        invalid_data_size = 1
+        y_data = df['Return_pct_change'].copy()
+        x_df = x_df.drop(columns=['close'])
+
+        x_df   = x_df.shift(periods=pct_change_window_size)
+        y_data = y_data.iloc[pct_change_window_size:]
+        x_df   = x_df.iloc[invalid_data_size:]
+
+
+    elif (prediction_method ==  PredictionMethod.daily_returns):
+        print("prediction_method daily_returns calc..")
+
+        invalid_data_size = 1
+        y_data = df['daily_returns'].copy()
+        x_df = x_df.drop(columns=['close'])
+
+        x_df   = x_df.shift(periods=invalid_data_size)
+        y_data = y_data.iloc[invalid_data_size:]
+        x_df   = x_df.iloc[invalid_data_size:]
 
     elif (prediction_method ==  PredictionMethod.high):
         invalid_data_size = 1
-        y_data = df['high']
+        y_data = df['high'].copy()
 
+        x_df   = x_df.shift(periods=pct_change_window_size)
+
+        y_data = y_data.iloc[invalid_data_size:]
+        x_df   = x_df.iloc[invalid_data_size:]
     else:
         invalid_data_size = 1
         y_data = df['close']
 
-    y_data = (np.asarray(y_data)[invalid_data_size:])
+    y_data = y_data.values
 
-    x_data = df.drop(columns=['Return_pct_change','target_bool','log_return'],errors = 'ignore')
-    x_data = (np.asarray(x_data)[:-invalid_data_size])
+    x_data = x_df.drop(columns=['Return_pct_change','target_bool','log_return','daily_returns'],errors = 'ignore')
+    x_data_null_num = x_data.isnull().sum().sum()
+    if (x_data_null_num>0):
+        print("ERROR ! null data in x_data, sum: " + str(x_data_null_num))
+        print(x_data.head(n=30))
+        return 1
 
-    x_data  = x_data[1:]
+    x_data  = x_data[1:] #np.delete(x_data, (0), axis=0)
     x_history_data = y_data[:-1]
-    x_history_data = np.expand_dims(x_history_data, axis=1)
     y_data  = y_data[1:]
 
     data_length = len(x_data)
@@ -215,10 +274,33 @@ def GetTargetData(df,prediction_method,num_of_periods_for_item):
     x_data  = x_data[:data_round_length]
     x_history_data = x_history_data[:data_round_length]
     y_data  = y_data[:data_round_length]
+    print("3 y_data size: " + str(y_data.shape))
+    print("3 x_history_data size: " + str(x_history_data.shape))
+
+    x_data_shape_pre = x_data.shape
+    print("x_data size: " + str(x_data_shape_pre))
 
     x_data       = GetShiftingWindows(x_data,step_size=1,window_width=num_of_periods_for_item)
+
+    x_history_data = np.expand_dims(x_history_data, axis=1)
     x_history_data = GetShiftingWindows(x_history_data,step_size=1,window_width=num_of_periods_for_item)
-    y_data  = y_data[num_of_periods_for_item-1:].reshape(-1,1)
+
+    GetSeqLen = True
+    if (GetSeqLen):
+        x_data_shape = x_data.shape
+        x_data = x_data.reshape(x_data_shape[0],x_data_shape_pre[1],-1)
+        print("x_data size: " + str(x_data.shape))
+        x_history_data_shape = x_history_data.shape
+        print("x_history_data size: " + str(x_history_data_shape))
+        x_history_data = x_history_data.reshape(x_history_data_shape[0],1,-1)
+
+        y_data = np.expand_dims(y_data, axis=1)
+        y_data = GetShiftingWindows(y_data,step_size=1,window_width=num_of_periods_for_item)
+        y_data_shape = y_data.shape
+        y_data  = y_data.reshape(y_data_shape[0],1,-1)
+    else:
+        #x_history_data = np.expand_dims(x_history_data, axis=1)
+        y_data  = y_data[num_of_periods_for_item-1:].reshape(-1,1)
 
     logging.debug("x_data size: " + str(x_data.shape))
     logging.debug("x_history_data size: " + str(x_history_data.shape))
@@ -242,12 +324,16 @@ def ConstructTestData(df, model_params,test_train_split,train_data_precentage):
     TakeLogData   = False
     BinaryTarget  = model_params.prediction_method ==  PredictionMethod.binary
     #############
+    print(df.head())
+
+    #df = df.reindex(index=df.index[::-1])
+    #print(df.head())
 
     logging.debug(df.head())
     logging.debug(df.columns.values)
-
-    Processed_df = PreProcessStockData(df,TakeLogData,model_params.smooth_graph,model_params.normalization_method,BinaryTarget,debug=False)
-    x_data , x_history_data, y_data = GetTargetData(Processed_df,model_params.prediction_method,model_params.num_of_periods)
+    pct_change_window_size = 1
+    Processed_df = PreProcessStockData(df,TakeLogData,pct_change_window_size,model_params.smooth_graph_window,model_params.normalization_method,BinaryTarget,debug=False)
+    x_data , x_history_data, y_data = GetTargetData(Processed_df,pct_change_window_size,model_params.prediction_method,model_params.num_of_periods)
 
     logging.debug("post normalization df : ")
     logging.debug(Processed_df.head())

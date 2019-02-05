@@ -10,7 +10,7 @@ import os.path
 def initialize_logger(output_dir):
     #Get main logger to add new specifications. Then set global log level to debug
     logger = logging.getLogger()
-    logger.setLevel(logging.DEBUG) #DEBUG
+    logger.setLevel(logging.ERROR) #DEBUG ERROR
 
     # create console handler and set level to info
     handler = logging.StreamHandler()

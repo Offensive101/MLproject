@@ -10,13 +10,16 @@ from FeatureBuilder import stat_features
 ####################################
 import numpy as np
 import pandas as pd
+import operator
 
 import pandas_datareader.nasdaq_trader
 from pandas_datareader.nasdaq_trader import get_nasdaq_symbols
 import pandas_datareader.data as web
 from pandas.tests.io.parser import na_values
-
+from pandas import ExcelWriter
 from sklearn import preprocessing
+import pickle
+from scipy.interpolate._interpolate import block_average_above_dddd
 ####################################
 
 class MyFeatureList:
@@ -33,6 +36,7 @@ class MyFeatureList:
         self.momentum         = True if 'momentum' in feature_list else False
         self.sma_             = True if 'sma_' in feature_list else False
         self.b_bonds          = True if 'b_bonds' in feature_list else False
+        self.google_trends    = True if 'google_trends' in feature_list else False
 
 class FeatureBuilder():
     def __init__(self, stocks_list,feature_list, dates_range,time_granularity):
@@ -46,26 +50,56 @@ def ImportStockFromWeb(stocks_list,dates_range,time_granularity):
     start_date = dates_range[0]
     end_date   = dates_range[-1]
 
-#building an empty data frams
-    my_df = pd.DataFrame(index=dates_range)
+    import_data = [stocks_list,dates_range]
 
-#read spy data into temprorary data frame, to use as reference to dates there is market active
-    ReferenceStock = web.DataReader('SPY', 'iex', start_date, end_date)
+    try:
+        with open('StockDataFromWeb_list.pickle', 'rb') as handle:
+            import_data_old = pickle.load(handle)
+    except:
+        import_data_old = [1,2]
+    ok = False
+    #if (ok==True):
+    if (np.array_equal(import_data_old,import_data_old)):
+        my_df = pd.read_excel(io = r'StockDataFromWeb.xlsx')
+    else:
+        #building an empty data frams
+        my_df = pd.DataFrame(index=dates_range)
 
-    my_df = my_df.join(ReferenceStock['close'],how='inner')
-    my_df = my_df.rename(columns={'close': 'close_SPY'})
+        #read spy data into temprorary data frame, to use as reference to dates there is market active
+        ReferenceStock = web.DataReader('SPY', 'iex', start_date, end_date) #iex
 
-    df_temp = web.DataReader(stocks_list, 'iex', start_date, end_date)
-    my_df   = my_df.join(df_temp)
+        my_df = my_df.join(ReferenceStock['close'],how='inner')
+        my_df = my_df.rename(columns={'close': 'close_SPY'})
 
-    if (remove_relative_stock):
-        del my_df['close_SPY']
+        df_temp = web.DataReader(stocks_list, 'iex', start_date, end_date) #yahoo iex
+        my_df   = my_df.join(df_temp)
+
+        if (remove_relative_stock):
+            del my_df['close_SPY']
+
+        with open('StockDataFromWeb_list.pickle', 'wb') as handle:
+            pickle.dump(import_data, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+        writer = ExcelWriter('StockDataFromWeb.xlsx')
+        my_df.to_excel(writer)
+        writer.save()
 
     return my_df
 
-def CalcFeatures(CurrStockDataFrame, feature_list):
+def CalcFeatures(CurrStockDataFrame, feature_list,stock_name):
+    max_window_size = 5
     FullFeaturesDF = pd.DataFrame(index=CurrStockDataFrame.index)
+    if feature_list.google_trends == True:
+        print("reading google trend features..")
+        GoGTrends_DF = pd.read_excel(io = r'C:\Users\mofir\egit-master\git\egit-github\MLproject\csv_data\google_trend_stats_3_2_2019.xlsx', sheet_name = stock_name)
+        GoGTrends_DF = GoGTrends_DF.set_index(GoGTrends_DF['date'])
+        #print(GoGTrends_DF.columns)
+        GoGTrends_DF = GoGTrends_DF.drop(['Close','Open'],axis=1)
+        FullFeaturesDF = FullFeaturesDF.join(GoGTrends_DF).drop(['date'],axis=1)
+        FullFeaturesDF = FullFeaturesDF/100 #change to df
 
+        #print(FullFeaturesDF.head())
+        #pd.date_range(start_date_str,end_date_str)
     if feature_list.close == True:
         FullFeaturesDF['close'] = CurrStockDataFrame['close']
 
@@ -105,6 +139,8 @@ def CalcFeatures(CurrStockDataFrame, feature_list):
     if feature_list.b_bonds == True:
         FullFeaturesDF['b_bonds'] = stat_features.compute_bollinger_bonds(CurrStockDataFrame['close'],window=5)
 
+    FullFeaturesDF = FullFeaturesDF.iloc[max_window_size:]
+
     return FullFeaturesDF
 
 def FeatureBuilderMain(stocks_list, feature_list, dates_range,time_granularity):
@@ -113,11 +149,11 @@ def FeatureBuilderMain(stocks_list, feature_list, dates_range,time_granularity):
     AllStocksDfList = []
 
     for stock in stocks_list:
-        logging.info("****************** FeatureBuilderMain : " + str(stock) + "*******************")
+        logging.error("****************** FeatureBuilderMain : " + str(stock) + "*******************")
 
         #getting stock data of several stocks together, should be more efficient
         CurrStockDataFrame = ImportStockFromWeb(stock,dates_range,time_granularity)
-        CurrFeaturesDF     = CalcFeatures(CurrStockDataFrame,feature_list)
+        CurrFeaturesDF     = CalcFeatures(CurrStockDataFrame,feature_list,stock_name = stock)
         AllStocksDfList.append(CurrFeaturesDF)
 
     return AllStocksDfList

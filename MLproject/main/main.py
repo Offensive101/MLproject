@@ -24,7 +24,7 @@ import torch.nn.functional as F
 ####################################
 import numpy as np
 import pandas as pd
-
+from pandas import ExcelWriter
 import pandas_datareader.nasdaq_trader
 from pandas_datareader.nasdaq_trader import get_nasdaq_symbols
 import pandas_datareader.data as web
@@ -96,8 +96,8 @@ def TrainMyModel(CurrStockDataFrame,CurrStockDataFrame_branch,configuration_list
 
     real_value,predictad_value,confidence_vector,best_config,prediction_summary = RunNetworkArch(CurrStockDataFrame,CurrStockDataFrame_branch, curr_config)
 
-    error = abs((predictad_value - real_value)/real_value)*100
-    logging.info("error mean simple: " + str(error.mean()))
+    #error = abs((predictad_value - real_value)/real_value)*100
+    #logging.info("error mean simple: " + str(error.mean()))
 
     '''
     calculating stats considering usage of confidence and without
@@ -128,7 +128,7 @@ def TrainMyModel(CurrStockDataFrame,CurrStockDataFrame_branch,configuration_list
 
         buy_vector_adjusted = buy_vector_confidence_high * buy_vector_test_master
         print("prediction_stats with RFC")
-        prediction_stats_df = CalcSt(real_value,predictad_value,buy_vector_adjusted,plot_buy_decisions = True).loc[0]
+        prediction_stats_df = CalcSt(real_value,predictad_value,buy_vector_adjusted,plot_buy_decisions = True,curr_model = 'RFC').loc[0]
         print(prediction_stats_df)
 
     #prediction_stats_df.plot(y=['false_negative_ratio','false_positive_ratio','mean_gain','mean_error'])
@@ -169,24 +169,70 @@ if __name__ == '__main__':# needed due to: https://github.com/pytorch/pytorch/is
     '''
     ###################################defining model parameters#############################################
     '''
+    USE_GOOGLE_TRENDS = True
 
     stock_list = ['INTC'] #['MLNX','NVDA','FB','INTC']
+    stock_list_gog_trend = ['MMM'] #,'ABT','ABBV','ABMD','ACN']
 
     start_date_str = '2014-01-01'
     end_date_str   = '2018-10-30'
     dates_range = pd.date_range(start_date_str,end_date_str) #we get a DatetimeIndex object in a list
 
-    stat_params    = ['mean_error','std','potential_gain','missing_buy_ratio','false_buy_ratio','mean_gain_per_day']
-    config_model_default, AllStocksDf_master, AllStocksDf_branch = GetModelDefaultConfig(USE_CUDA,stock_list,dates_range)
+    if (USE_GOOGLE_TRENDS):
+        config_model_default, AllStocksDf_master, AllStocksDf_branch = GetModelDefaultConfig(USE_CUDA,stock_list_gog_trend,dates_range)
+    else:
+        config_model_default, AllStocksDf_master, AllStocksDf_branch = GetModelDefaultConfig(USE_CUDA,stock_list,dates_range)
+
+    #fig = plt.figure()
+    #ax1 = fig.add_subplot(2,1,1)
+    #df_rolling_std   = AllStocksDf_master[0].rolling(center=False,window=5).std()
+    #df_with_std = AllStocksDf_master > df_rolling_std
+    #std = np.std(single_df['Derivative'])
+    #high_df = single_df[single_df['Derivative'] > 1 + 2*std]
+    #high_df.plot()
+    single_df = AllStocksDf_master[0].tail(100)
+    single_df.plot()
+    plt.show(block= False)
+
+    #ax1.plot(AllStocksDf_master)
+    #ax1.set_title('features df ')
+    #fig.show()
+    #fig.savefig('Test losses for test RNN' + '.png')
 
     BlackBox_hyperParameters = {
         'feature_list'  :      [['close'],['open'],['close','open'],['close','volume'],['open','high'],['close','open','high'],['close','open','high','volume'],['close','open','high','low','volume']],
         'num_of_periods':      [1,2]
         }
+
+    stat_params    = ['mean_error','std','potential_gain','missing_buy_ratio','false_buy_ratio','mean_gain_per_day']
+
     '''
     ################################ Experiment in new RF model for confidence values ###########################
     '''
+    def write2excel(model_name,excel_name,stats_summary_df,buy_decision_summary_list):
+        writer = ExcelWriter(excel_name)
 
+        if (model_name==NetworkModel.DualLstmAttn):
+            sheet_name_stats ='statistics summary DualLstm'
+            sheet_name_buy   ='price and decision DualLstm'
+
+        elif (model_name==NetworkModel.simpleRNN):
+            sheet_name_stats ='statistics summary simpleRnn'
+            sheet_name_buy   ='price and decision simpleRnn'
+
+        else:
+            sheet_name_stats ='statistics summary Other'
+            sheet_name_buy   ='price and decision Other'
+
+        stats_summary_df.to_excel(       writer, sheet_name = sheet_name_stats, startrow=0,startcol=0)
+        i = 0
+        for buy_decision_summary_df in buy_decision_summary_list:
+            buy_decision_summary_df.to_excel(writer, sheet_name = sheet_name_buy, startrow=1,
+                                             startcol=i, index = False)
+            i = i + buy_decision_summary_df.shape[1] #next col will start after this one
+
+        writer.save()
+        writer.close()
     #CurrStockDataFrame_branch = AllStocksDf_branch[0]
     #buy_vector_confidence = TrainPredictRandForest(CurrStockDataFrame_branch,config_model_default)
     #best_config,master_mean_error = TrainMyModel(AllStocksDf_master[0],config_model_default)
@@ -212,26 +258,37 @@ if __name__ == '__main__':# needed due to: https://github.com/pytorch/pytorch/is
             score_list = [] #TODO - add more
             best_error = np.inf
             best_gain = 0
+            tune_count = 0
             allParams = sorted(BlackBox_hyperParameters)
             combinations = itertools.product(*(BlackBox_hyperParameters[Param] for Param in allParams))
             for config in combinations:
-                print("curr config is: " + str(config))
+                logging.error("curr config is: " + str(config))
                 curr_config = config_model_default
                 curr_config.feature_list   = config[0]
                 curr_config.feature_num    = len(config[0])
                 curr_config.num_of_periods = config[1]
-                print("curr features are: " + str(curr_config.feature_list))
+                curr_config.tune_count = tune_count
+                logging.error("curr features are: " + str(curr_config.feature_list))
                 best_config, stats_summary,buy_decision_summary = TrainMyModel(CurrStockDataFrame,CurrStockDataFrame_branch,curr_config , stat_params)
                 #curr_error = stats_summary['AvgGainEXp']
                 curr_gain = stats_summary['AvgGainEXp']
                 score_list.append(curr_gain)
 
                 if curr_gain > best_gain:
-                    print("updating best gain... prev value: " + str(best_gain) + " curr gain value: " + str(curr_gain))
-                    print("best parameters (periods & feature list): " + str(curr_config.num_of_periods) + " " + str(curr_config.feature_list))
+                    logging.error("updating best gain... prev value: " + str(best_gain) + " curr gain value: " + str(curr_gain))
+                    logging.error("best parameters (periods & feature list): " + str(curr_config.num_of_periods) + " " + str(curr_config.feature_list))
+                    logging.error("best_config is: ")
+                    logging.error(best_config.__dict__)
                     best_gain = curr_gain
                     best_config = curr_config
                     best_feature_list = curr_config.feature_list
+
+                tune_excel_name = r"out_stocks_result_summary" + str(tune_count) + ".xlsx"
+                writer = ExcelWriter(tune_excel_name)
+                stats_summary.to_excel(writer , startrow=0,startcol=0)
+                writer.save()
+                writer.close()
+                tune_count = tune_count + 1
             #score_max_idx = score_list.index(max(score_list))
             #best_config = combinations[score_max_idx]
         elif (config_model_default.tune_needed):
@@ -245,7 +302,7 @@ if __name__ == '__main__':# needed due to: https://github.com/pytorch/pytorch/is
         else:
             best_config,stats_summary,buy_decision_summary = TrainMyModel(CurrStockDataFrame,CurrStockDataFrame_branch,config_model_default, stat_params)
 
-        print(best_config)
+        print(best_config.__dict__)
         save_config = best_config.__dict__.copy()
         save_config['feature_list'] = best_feature_list
 
@@ -266,39 +323,14 @@ if __name__ == '__main__':# needed due to: https://github.com/pytorch/pytorch/is
     #buy_decision_summary_df = pd.concat(buy_decision_summary_list,axis=1, keys=stock_list)
     #print(buy_decision_summary_df)
 
-    from pandas import ExcelWriter
-    from openpyxl import load_workbook
+
 
     #book = load_workbook(r"C:\Users\mofir\egit-master\git\egit-github\MLproject\main\out_stocks_result_summary.xlsx")
     # so we can overwrite the existing file if we want
     #writer.book = book
     #writer.sheets = dict((ws.title, ws) for ws in book.worksheets)
-    def write2excel(model_name):
-        writer = ExcelWriter(r"out_stocks_result_summary.xlsx")
-
-        if (model_name==NetworkModel.DualLstmAttn):
-            sheet_name_stats ='statistics summary DualLstm'
-            sheet_name_buy   ='price and decision DualLstm'
-
-        elif (model_name==NetworkModel.simpleRNN):
-            sheet_name_stats ='statistics summary simpleRnn'
-            sheet_name_buy   ='price and decision simpleRnn'
-
-        else:
-            sheet_name_stats ='statistics summary Other'
-            sheet_name_buy   ='price and decision Other'
-
-        stats_summary_df.to_excel(       writer, sheet_name = sheet_name_stats, startrow=0,startcol=0)
-        i = 0
-        for buy_decision_summary_df in buy_decision_summary_list:
-            buy_decision_summary_df.to_excel(writer, sheet_name = sheet_name_buy, startrow=1,
-                                         startcol=i, index = False)
-            i = i + buy_decision_summary_df.shape[1] #next col will start after this one
-
-        writer.save()
-        writer.close()
-
-    write2excel(config_model_default.network_model)
+    excel_name = r"out_stocks_result_summary.xlsx"
+    write2excel(config_model_default.network_model,excel_name,stats_summary_df,buy_decision_summary_list)
 
     print (' date & time of Run End is: ' + time.strftime("%x") + ' ' + str(time.strftime("%H:%M:%S")))
     logging.info('*****************finished executing******************')

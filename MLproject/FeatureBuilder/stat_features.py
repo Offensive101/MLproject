@@ -174,6 +174,15 @@ def objective_SR_function(x, args,use_normalize = True):
     SR_daily  =  np.sqrt(sf) * SR_annual
     return -SR_daily #we want maximum of SR
 
+def GetAssessReturn(stocks_df):
+    stocks_df_adj
+    stocks_df = \
+    returnsClosePrevRaw1.dropna(axis=1)
+    num_stocks = len(returnsClosePrevRaw1.columns)
+    print(num_stocks)
+
+
+    return 0
 def constraint1_Sum(x):
     sum_abs = 1
     x_sum = x.sum()

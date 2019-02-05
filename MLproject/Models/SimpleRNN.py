@@ -15,29 +15,41 @@ import time
 
 import numpy as np
 from utils.loggerinitializer import *
-
+from Models import GeneralModelFn
 
 class RnnSimpleModel(nn.Module):
 
-    def __init__(self, input_size, rnn_hidden_size, output_size):
+    def __init__(self, input_size,input_seq_len, rnn_hidden_size, output_size):
 
         super(RnnSimpleModel, self).__init__()
 
+        self.input_seq_len = input_seq_len
+        self.input_size = input_size
+        self.num_layers = 2
+
         self.rnn = nn.RNN(input_size, rnn_hidden_size,
-                                num_layers=2, nonlinearity='relu',
+                                num_layers=self.num_layers, nonlinearity='relu',
                                 batch_first=True)
         self.h_0 = self.initialize_hidden(rnn_hidden_size)
 
         self.linear = nn.Linear(rnn_hidden_size, output_size)
 
+        #self.softmax = nn.functional.softmax
+
     def forward(self, x):
 
-        x = x.unsqueeze(0)
+        #x = x.unsqueeze(0)
+        #print(x.shape)
+        #batch_size = x.shape[0]
+        #input_size = x.shape[1]
+
+        x = x.view(self.input_seq_len,-1,self.input_size)
         self.rnn.flatten_parameters()
         out, self.h_0 = self.rnn(x, self.h_0)
 
         out = self.linear(out)
 
+        #out = self.linear(out)
         # third_output = self.relu(self.linear3(second_output))
         # fourth_output = self.relu(self.linear4(third_output))
         # output = self.rnn(lineared_output)
@@ -46,21 +58,21 @@ class RnnSimpleModel(nn.Module):
 
     def initialize_hidden(self, rnn_hidden_size):
         # n_layers * n_directions, batch_size, rnn_hidden_size
-        return Variable(torch.randn(2, 1, rnn_hidden_size),
+        return Variable(torch.randn(self.num_layers, self.input_seq_len, rnn_hidden_size),
                         requires_grad=True)
 
-def Train(input_size, hidden_size, output_size, train_loader,file_path,learning_rate=0.001,num_epochs = 100):
-    plt.figure(1, figsize=(12, 5))
+def Train(input_size,input_seq_len, clf_type,hidden_size, output_size, train_loader,file_path,learning_rate=0.001,num_epochs = 100):
+    #plt.figure(1, figsize=(12, 5))
 
-    model = RnnSimpleModel(input_size, hidden_size, output_size)
+    model = RnnSimpleModel(input_size,input_seq_len, hidden_size, output_size)
 
-    try:
-        model.load_state_dict(torch.load(file_path))
-    except:
-        model = RnnSimpleModel(input_size, hidden_size, output_size)
+    #try:
+    #    model.load_state_dict(torch.load(file_path))
+    #except:
+    #    model = RnnSimpleModel(input_size, hidden_size, output_size)
 
     train_start_t0 = time.time()
-    criterion = nn.MSELoss()
+    criterion = nn.MSELoss() if clf_type=='reg' else GeneralModelFn.loss_multi_label_fn #nn.BCEWithLogitsLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
     epochs = num_epochs
@@ -77,8 +89,8 @@ def Train(input_size, hidden_size, output_size, train_loader,file_path,learning_
         predictions = []
         correct_values = []
         running_loss = 0.0
-        logging.info("SimpleRnn: epoch num: ")
-        logging.info(str(epoch))
+        logging.error("SimpleRnn: epoch num: " + str(epoch))
+        #logging.error(str(epoch))
 
         for i, data in enumerate(train_loader):
             #logging.debug("SimpleRnn: batch num: ")
@@ -88,13 +100,17 @@ def Train(input_size, hidden_size, output_size, train_loader,file_path,learning_
             xs = xs.float()
             ys = ys.float()
             ys_size = ys.size()
-            ys.data = np.reshape(ys.data, (1,ys_size[0],1))
-            #logging.debug("SimpleRnn: train data for x,y are: ")
-            #logging.debug(xs)
-            #logging.debug(ys)
+            #print(ys_size)
+            ys.data = np.reshape(ys.data, (-1,ys_size[0],1)) # ,ys_size[1]
+
+            logging.debug("SimpleRnn: train data for x,y are: ")
+            logging.debug(xs.size())
+            logging.debug(ys.size())
             y_pred = model(xs)
-            #logging.debug("y_pred is: ")
-            #logging.debug(y_pred)
+            #predictions = nn.functional.softmax(y_pred, dim=2)
+            #print(predictions)
+            logging.debug("y_pred is: ")
+            logging.debug(y_pred.size())
             loss_start_t0 = time.time()
             loss = criterion(y_pred, ys)
             loss_step_time.append(time.time() - loss_start_t0)
@@ -121,8 +137,8 @@ def Train(input_size, hidden_size, output_size, train_loader,file_path,learning_
         curr_epoch_loss = running_loss/len(train_loader)
         total_epoch_loss.append(curr_epoch_loss)
 
-        logging.info("current batch mean loss is: ")
-        logging.info(curr_epoch_loss)
+        print("current epoch mean loss is: ")
+        print(curr_epoch_loss)
         running_loss = 0.0
 
         def stacking_for_charting(given_list):
@@ -136,24 +152,27 @@ def Train(input_size, hidden_size, output_size, train_loader,file_path,learning_
 
         steps = np.linspace(epoch*predictions_for_chart.shape[0],
                             (epoch+1)*predictions_for_chart.shape[0],
+
                             predictions_for_chart.shape[0])
-        fig = plt.figure()
-        ax = fig.add_subplot(2,1,1)
-        ax.plot(steps, predictions_for_chart, 'r-')
-        ax.plot(steps, correct_values_for_chart, 'b-')
-        #plt.draw()
-        #plt.pause(0.05)
+        if epoch==(epochs-1):
+            fig = plt.figure()
+            ax = fig.add_subplot(2,1,1)
+            ax.plot(steps, predictions_for_chart, 'r-')
+            ax.plot(steps, correct_values_for_chart, 'b-')
+            #plt.draw()
+            #plt.pause(0.05)
+            #plt.show(block = False)
+            fig.savefig('true and pred values as a function of time' + '.png')
+
         epoch_step_time.append(time.time() - epoch_start_t0)
 
 
     logging.info("all epochs loss are: ")
     logging.info(total_epoch_loss)
 
+
     train_total_time = train_start_t0 - time.time()
     torch.save(model.state_dict(), file_path)
-
-    #plt.show(block = False)
-    fig.savefig('true and pred values as a function of time' + '.png')
 
     logging.info("train_total_time: ")
     logging.info(train_total_time)
@@ -166,6 +185,8 @@ def Train(input_size, hidden_size, output_size, train_loader,file_path,learning_
     logging.info(optimizer_zero_grad_time)
     logging.info("epoch_step_time: ")
     logging.info(epoch_step_time)
+
+    return total_epoch_loss
 
 def Predict(model,loss_fn, test_loader,metrics,cuda=False):
     """Evaluate the model on `num_steps` batches.
@@ -200,13 +221,22 @@ def Predict(model,loss_fn, test_loader,metrics,cuda=False):
         #print(output_batch)
         #print(labels_batch)
         labels_batch_size = labels_batch.size()
-        labels_batch.data = np.reshape(labels_batch.data, (labels_batch_size[0]))
-        output_batch.data = np.reshape(output_batch.data, (labels_batch_size[0]))
+        #print(labels_batch.data)
+        #print(labels_batch_size)
+        labels_batch.data = np.reshape(labels_batch.data, (labels_batch_size[-1]))
+        output_batch.data = np.reshape(output_batch.data, (labels_batch_size[-1]))
+
         loss = loss_fn(output_batch, labels_batch)
 
         # extract data from torch Variable, move to cpu, convert to numpy arrays
         output_batch = output_batch.data.cpu().numpy()
         labels_batch = labels_batch.data.cpu().numpy()
+        #print(labels_batch)
+        #print(output_batch)
+        output_batch = [output_batch[-1]]
+        labels_batch = labels_batch[-1]
+        #print(labels_batch)
+        #print(output_batch)
 
         # compute all metrics on this batch
         #summary_batch = {metric: metrics[metric](output_batch, labels_batch)
@@ -237,7 +267,6 @@ def accuracy(outputs, labels):
     """
     outputs = np.argmax(outputs, axis=1)
     return np.sum(outputs==labels)/float(labels.size)
-
 
 def loss_fn(outputs, labels):
     """

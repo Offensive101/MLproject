@@ -4,6 +4,7 @@ Created on Jan 15, 2019
 @author: mofir
 '''
 from enum import Enum
+import pandas as pd
 
 from FeatureBuilder.FeatureBuilderMain import FeatureBuilderMain
 from FeatureBuilder.FeatureBuilderMain import MyFeatureList
@@ -34,20 +35,23 @@ class PredictionMethod(Enum):
     slope  = 4
     MultiClass = 5
     pct_change = 6
+    daily_returns = 7
 
 class LossFunctionMethod(Enum):
     pnl = 1
     mse = 2
     BCELoss= 3
     HingeEmbeddingLoss = 4
+    multi_class_loss = 5
 
 class NetworkModel(Enum):
     simpleRNN = 1
     simpleLSTM = 2
     DualLstmAttn = 3
     BiDirectionalLstmAttn = 4 #TODO - add
-    RandomForest = 5
-    EnsambleLearners = 6
+    RandomForestReg = 5
+    RandomForestClf = 6
+    EnsambleLearners = 7
 
 
 ################################################################################
@@ -112,12 +116,12 @@ def GetModelDefaultConfig(USE_CUDA,stock_list,dates_range):
     #allocs_stock_list = [0.25,0.25,0.25,0.25]
     #total_funds_start_value = 10000
 
-    complete_features = ['close','open','high','low','volume','rolling_mean','rolling_bands','daily_returns','momentum','sma_','b_bonds']
+    complete_features = ['google_trends','close','open','high','low','volume','rolling_mean','rolling_bands','daily_returns','momentum','sma_','b_bonds']
 
-    master_feature_list  = ['close'] #,'open','high'] #,'open','high','low'] #TODO - add more features
+    master_feature_list  = ['close','low']
 
-    #branch goal is to give some confidence level as to how probable we will see an increase, in addition to the master model
-    branch_feature_list = ['close','rolling_mean','rolling_bands','daily_returns','momentum','sma_','b_bonds']
+    #master_feature_list  = ['google_trends','close','daily_returns','rolling_bands','momentum','b_bonds'] #,'open','high'] #,'open','high','low'] #TODO - add more features
+    branch_feature_list = ['close','rolling_mean','rolling_bands','daily_returns','momentum','sma_','b_bonds']    #branch goal is to give some confidence level as to how probable we will see an increase, in addition to the master model
 
     my_master_feature_list = MyFeatureList(master_feature_list)
     my_branch_feature_list = MyFeatureList(branch_feature_list)
@@ -129,40 +133,49 @@ def GetModelDefaultConfig(USE_CUDA,stock_list,dates_range):
                     time_granularity=time_granularity
                                 )
 
-    AllStocksDf_branch = FeatureBuilderMain(
-                        stock_list,
-                        my_branch_feature_list,
-                        dates_range,
-                        time_granularity=time_granularity
-                                )
+    AllStocksDf_branch = AllStocksDf_master
+        #FeatureBuilderMain(stock_list,my_branch_feature_list,dates_range,time_granularity=time_granularity)
+
      #TODO - do we want somehow to decide on only part of the features? (using PCA?)
     '''
     #######
     '''
 
     def GetRnnParams(tune = False):
-        Rnnparams = {
-            'learning_rate': 0.001,
-            'hidden_layer_size': 16,
-            'num_epochs': 2,#12
-            'batch_size': 16
+
+        GeneralParams = {
+            'num_of_periods':2,
+            'normalization_method': NormalizationMethod.NoNorm,
+            'prediction_method':    PredictionMethod.close, #pct_change , #close ,
+            'loss_method':          LossFunctionMethod.mse, #multi_class_loss,
+            'smooth_graph_window':  2
             }
 
+        if (objectview(GeneralParams).prediction_method==PredictionMethod.close):
+
+            Rnnparams = {
+                'learning_rate': 0.005,
+                'hidden_layer_size': 32,
+                'num_epochs': 12,
+                'batch_size': 16
+                }
+        else:
+            Rnnparams = {
+                'learning_rate': 0.001,
+                'hidden_layer_size': 100,
+                'num_epochs': 2,
+                'batch_size': 16
+                }
+
         RnnparamsTune = {
-            'learning_rate': [0.001,0.0005,0.002],
-            'hidden_layer_size': [16,32],
-            'num_epochs': [12,24],
-            'batch_size': [8,16,32]
+            'learning_rate': [0.001,0.0005,0.005],
+            'hidden_layer_size': [32],
+            'num_epochs': [64,100],
+            'batch_size': [16]
             }
 
         RnnparamsFinal = RnnparamsTune if tune else Rnnparams
 
-        GeneralParams = {
-            'num_of_periods':1,
-            'normalization_method': NormalizationMethod.NoNorm,
-            'prediction_method':    PredictionMethod.close, #.MultiClass,
-            'smooth_graph': False
-            }
 
         RnnDict = {'ModelParams': objectview(RnnparamsFinal),
                 'GeneralParams'  : objectview(GeneralParams)
@@ -214,40 +227,42 @@ def GetModelDefaultConfig(USE_CUDA,stock_list,dates_range):
 
     def GetRFCParams(tune = False):
 
-        RFC_params = {'n_estimators': 100,'max_depth':15, 'max_features':None, 'criterion':"entropy"}
-        RFC_Tune_params = {'n_trees': [80],'max_depth':[15], 'n_features':[None], 'weight_type':["sub"]}
+        RFC_params = {'n_estimators': 100,'max_depth':15, 'max_features':None, 'criterion':"gini"}
+        RFC_Tune_params = {'n_estimators': [80],'max_depth':[15], 'max_features':[None], 'criterion':["entropy","gini"]}
     #defines all the possible value to examine that will fir the model best
 
         GeneralParams = {
             'normalization_method': NormalizationMethod.Naive,
             'prediction_method':    PredictionMethod.binary,
-            'smooth_graph': False
+            'smooth_graph': False,
+            'num_of_periods': 1
             }
 
         RFC_paramsFinal = RFC_Tune_params if tune else RFC_params
 
-        RFCDict = {'ModelParams': RFC_paramsFinal,
-                   'GeneralParams'  : GeneralParams
+        RFCDict = {'ModelParams': objectview(RFC_paramsFinal),
+                   'GeneralParams'  : objectview(GeneralParams)
             }
 
         return RFCDict
 
     def GetRFRParams(tune = False):
 
-        RFR_params = {'n_estimators': 100,'max_depth':15, 'max_features':None, 'criterion':"entropy"}
-        RFR_Tune_params = {'n_trees': [80],'max_depth':[15], 'n_features':[None], 'weight_type':["sub"]}
+        RFR_params = {'criterion': "mse", 'n_estimators': 300, 'max_depth':10, 'max_features':0.5}
+        RFR_Tune_params = {'n_estimators': [100,200,300,400],'max_depth':[5,10,15], 'max_features':[0.2,0.5,0.7], 'criterion':["mse","mae"]}
     #defines all the possible value to examine that will fir the model best
 
         GeneralParams = {
-            'normalization_method': NormalizationMethod.Naive,
+            'normalization_method': NormalizationMethod.simple, #Naive, #Naive,
             'prediction_method':    PredictionMethod.close,
-            'smooth_graph': False
+            'smooth_graph': False,
+            'num_of_periods': 1
             }
 
         RFR_paramsFinal = RFR_Tune_params if tune else RFR_params
 
-        RFRDict = {'ModelParams': RFR_paramsFinal,
-                   'GeneralParams'  : GeneralParams
+        RFRDict = {'ModelParams': objectview(RFR_paramsFinal),
+                   'GeneralParams'  : objectview(GeneralParams)
             }
         return RFRDict
 
@@ -275,7 +290,7 @@ def GetModelDefaultConfig(USE_CUDA,stock_list,dates_range):
 
     if (config_net_default.tune_extra_model_needed & config_net_default.tune_needed):
         print("ERROR: can't tune both NN parameters and BlackBox parameters. has to first tune NN and then BlackBox")
-        return 1
+        #return 1
 
     config_net_default.LSTM_HyperParameters = GetLstmParams(config_net_default.tune_needed)
     config_net_default.LSTM_HyperParameters['ModelParams'].features_num = config_net_default.feature_num

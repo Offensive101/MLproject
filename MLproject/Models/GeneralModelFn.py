@@ -6,6 +6,7 @@ Created on Nov 15, 2018
 
 import numpy as np
 import torch
+import torch.nn as nn
 
 class GeneralModelFn(object):
     '''
@@ -32,6 +33,23 @@ def loss_fn(outputs, labels):
     num_examples = outputs.size()[0]
     return -torch.sum(outputs - labels)/num_examples
 
+
+def loss_multi_label_fn(outputs, labels):
+    print('hey from loss_multi_label_fn...')
+    #print(outputs.shape)
+    #print(labels.shape)
+    #from sklearn.preprocessing import LabelBinarizer
+    #outputs = LabelBinarizer().fit_transform(outputs.data) #.values.ravel().tolist()
+    #print(outputs.shape)
+    #labels = labels.squeeze(0) #.permute(1,0,2)
+    #labels = torch.max(labels, 1)[1]
+    #outputs = outputs.squeeze(0)
+    #labels = labels.type(torch.LongTensor)
+    #CrossEntropyLoss = nn.CrossEntropyLoss()
+    #loss = CrossEntropyLoss.forward(outputs,labels)
+
+    loss = loss_fn(outputs, labels)
+    return loss
 
 def accuracy(outputs, labels):
     """

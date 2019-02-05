@@ -437,7 +437,7 @@ class da_rnn(nn.Module):
         return y_pred
 
 
-def tune(classifier,X, y_history, y, input_size, arguments, cv=5,curr_stock = 'na'):
+def tune(classifier,X, y_history, y,x_test,y_test, input_size, arguments, cv=5,curr_stock = 'na'):
     '''
     This method is doing exactly what GridSearchCV is doing for a sklearn classifier.
     It will run cross validation training with cv folds many times. Each time it will evaluate the CV "performance" on a different
@@ -476,17 +476,19 @@ def tune(classifier,X, y_history, y, input_size, arguments, cv=5,curr_stock = 'n
         profit = 0
         error = 0
         error_slope = 0
-        for train_index, test_index in kf.split(X):
+        ok = True
+        if (ok==True):
+        #for train_index, test_index in kf.split(X):
             #X_train, X_test = X_df.iloc[train_index], X_df.iloc[test_index]
             #y_train, y_test = y_df.iloc[train_index], y_df.iloc[test_index]
-            X = pd.DataFrame(X)
-            X_train, X_test = X.iloc[train_index], X.iloc[test_index] #np.take(X, train_index,out=new_shape), np.take(X, test_index)
-            y_history = pd.DataFrame(y_history)
-            y_train_history = y_history.iloc[train_index]
+            #X = pd.DataFrame(X)
+            #X_train, X_test = X.iloc[train_index], X.iloc[test_index] #np.take(X, train_index,out=new_shape), np.take(X, test_index)
+            #y_history = pd.DataFrame(y_history)
+            #y_train_history = y_history.iloc[train_index]
 
-            y_train, y_test = np.take(y, train_index), np.take(y, test_index)
+            #y_train, y_test = np.take(y, train_index), np.take(y, test_index)
             ##logging.debug(y_train.shape)
-
+            X_train,y_train_history,y_train,X_test,y_test = X, y_history, y,x_test,y_test
             clf_curr.Train(X_train,y_train_history,y_train,X_test,y_test,plot_results = False,curr_stock = curr_stock)
             y_pred = np.array(clf_curr.Predict(X_test,y_test))
 
