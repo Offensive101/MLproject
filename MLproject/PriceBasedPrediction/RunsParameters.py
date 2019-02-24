@@ -5,6 +5,7 @@ Created on Jan 15, 2019
 '''
 from enum import Enum
 import pandas as pd
+import time
 
 from FeatureBuilder.FeatureBuilderMain import FeatureBuilderMain
 from FeatureBuilder.FeatureBuilderMain import MyFeatureList
@@ -64,7 +65,7 @@ class Network_Params:
                  num_epochs,batch_size,use_cuda,train_needed,AddRFConfidenceLevel,smooth_graph,
                  SaveTrainedModel,only_train,tune_needed,
                  tune_branch_needed,loss_method,load_best_params,
-                 tune_HyperParameters, tune_extra_model_needed,network_model):
+                 tune_HyperParameters, tune_extra_model_needed,tune_count,feature_list,tune_periods,tune_normalization,network_model):
 
         self.x_period_length      = x_period_length
         self.y_period_length      = y_period_length
@@ -90,9 +91,11 @@ class Network_Params:
         self.tune_HyperParameters          = tune_HyperParameters
         self.tune_extra_model_needed       = tune_extra_model_needed
         self.load_best_params     = load_best_params
-
+        self.tune_count           = tune_count
+        self.feature_list         = feature_list
         self.tune_branch_needed   = tune_branch_needed
-        #self.feature_list         = feature_list
+        self.tune_periods         = tune_periods
+        self.tune_normalization   = tune_normalization
 
 class objectview(object):
     def __init__(self, d):
@@ -107,71 +110,45 @@ class Config_model:
 ################################################################################
 
 def GetModelDefaultConfig(USE_CUDA,stock_list,dates_range):
-    '''
-    ###################################defining Feature list#############################################
-    '''
 
-    time_granularity=TimeGrnularity.daily #TODO- add support for other time granularity as well
-
-    #allocs_stock_list = [0.25,0.25,0.25,0.25]
-    #total_funds_start_value = 10000
-
-    complete_features = ['google_trends','close','open','high','low','volume','rolling_mean','rolling_bands','daily_returns','momentum','sma_','b_bonds']
-
-    master_feature_list  = ['close','low']
-
-    #master_feature_list  = ['google_trends','close','daily_returns','rolling_bands','momentum','b_bonds'] #,'open','high'] #,'open','high','low'] #TODO - add more features
-    branch_feature_list = ['close','rolling_mean','rolling_bands','daily_returns','momentum','sma_','b_bonds']    #branch goal is to give some confidence level as to how probable we will see an increase, in addition to the master model
-
-    my_master_feature_list = MyFeatureList(master_feature_list)
-    my_branch_feature_list = MyFeatureList(branch_feature_list)
-
-    AllStocksDf_master = FeatureBuilderMain(
-                    stock_list,
-                    my_master_feature_list,
-                    dates_range,
-                    time_granularity=time_granularity
-                                )
-
-    AllStocksDf_branch = AllStocksDf_master
-        #FeatureBuilderMain(stock_list,my_branch_feature_list,dates_range,time_granularity=time_granularity)
-
-     #TODO - do we want somehow to decide on only part of the features? (using PCA?)
-    '''
-    #######
-    '''
 
     def GetRnnParams(tune = False):
 
         GeneralParams = {
-            'num_of_periods':2,
-            'normalization_method': NormalizationMethod.NoNorm,
-            'prediction_method':    PredictionMethod.close, #pct_change , #close ,
+            'num_of_periods':5,
+            'normalization_method': NormalizationMethod.StandardScaler, #StandardScaler
+            'prediction_method':    PredictionMethod.close, #pct_change , #close ,daily_returns
             'loss_method':          LossFunctionMethod.mse, #multi_class_loss,
-            'smooth_graph_window':  2
+            'smooth_graph_window':  1
             }
 
         if (objectview(GeneralParams).prediction_method==PredictionMethod.close):
 
             Rnnparams = {
-                'learning_rate': 0.005,
-                'hidden_layer_size': 32,
-                'num_epochs': 12,
-                'batch_size': 16
+                'learning_rate': 0.001,
+                'hidden_layer_size': 100,
+                'num_epochs': 300,
+                'batch_size': 16,
+                'optimizer_amsgrad': False,
+                'optimizer_eps': 1e-8
                 }
         else:
             Rnnparams = {
-                'learning_rate': 0.001,
+                'learning_rate': 0.0001,
                 'hidden_layer_size': 100,
-                'num_epochs': 2,
-                'batch_size': 16
+                'num_epochs': 200,
+                'batch_size': 16,
+                'optimizer_amsgrad': False,
+                'optimizer_eps': 1e-8
                 }
 
         RnnparamsTune = {
-            'learning_rate': [0.001,0.0005,0.005],
-            'hidden_layer_size': [32],
-            'num_epochs': [64,100],
-            'batch_size': [16]
+            'learning_rate': [0.001,0.0003], #[0.001,0.0005,0.005],
+            'hidden_layer_size': [6,16],#[6,7,8,10,11,12,16],
+            'num_epochs': [100],#[100,150,200,220],
+            'batch_size': [6,8],
+            'optimizer_amsgrad': [False], #epoch_losses_list
+            'optimizer_eps': [1e-8]
             }
 
         RnnparamsFinal = RnnparamsTune if tune else Rnnparams
@@ -187,40 +164,54 @@ def GetModelDefaultConfig(USE_CUDA,stock_list,dates_range):
 
 
         GeneralParams = {
-            'normalization_method': NormalizationMethod.Naive,
-            'prediction_method':    PredictionMethod.binary,# close,
-            'smooth_graph': False,
-            'num_of_periods': 1
+            'normalization_method': NormalizationMethod.simple, #Naive,
+            'prediction_method':    PredictionMethod.daily_returns , #.daily_returns,# close,
+            'num_of_periods': 2,
+            'smooth_graph_window':  1
             }
 
-        LstmParams = {
+        LstmParams_close = {
             'T':                   GeneralParams['num_of_periods'],
-            'learning_rate':       0.00004,
+            'learning_rate':       0.004,
             'encoder_hidden_size': 64,
             'decoder_hidden_size': 64,
-            'num_epochs':          8000,
+            'num_epochs':          4000,
             'batch_size':          16,
             'lstm_dropout':        0, #doesnt seem to do good adding dropout here (i tried 0.1)
-            'loss_method' :        LossFunctionMethod.mse,
-            'features_num' :       [0]
+            'loss_method' :        LossFunctionMethod.pnl, #.mse,
             }
 
+        LstmParams_daily_rt = {#0ץ004
+            'T':                   GeneralParams['num_of_periods'],
+            'learning_rate':       0.0003,
+            'encoder_hidden_size': 64,
+            'decoder_hidden_size': 64,
+            'num_epochs':          100,#3000,
+            'batch_size':          2,
+            'lstm_dropout':        0, #doesnt seem to do good adding dropout here (i tried 0.1)
+            'loss_method' :        LossFunctionMethod.mse,
+            }
+
+        if (objectview(GeneralParams).prediction_method==PredictionMethod.close):
+            LstmParams = LstmParams_close
+        else:
+            LstmParams = LstmParams_daily_rt
+
         tune_lstm_HyperParameters = {
-            'T':                   [1], #can't change it here - i build the data from here
+            'T':                   [2], #can't change it here - i build the data from here
             'learning_rate':       [0.00003,0.00005,0.00008,0.0001],#,0.0001,0.001,0.003],#rough range would be [1e-3..1e-5]
-            'encoder_hidden_size': [64],#[16,64]
-            'decoder_hidden_size': [64],#[16,64]
-            'num_epochs':          [2000,4000,6000],#500,700
-            'batch_size':          [16], #[8,16,32] #try only values less than 32
+            'encoder_hidden_size': [32,64],#[16,64]
+            'decoder_hidden_size': [32,64],#[16,64]
+            'num_epochs':          [4000],#[40]
+            'batch_size':          [8,16], #[8,16,32] #try only values less than 32
             'lstm_dropout':        [0], #doesnt seem to do good adding dropout here (i tried 0.1)
             'loss_method' :        [LossFunctionMethod.mse,LossFunctionMethod.pnl],
-            'features_num' :       [0]
             }
 
         LstmparamsFinal = tune_lstm_HyperParameters if tune else LstmParams
 
         LstmDict = {'ModelParams': objectview(LstmparamsFinal),
-                'GeneralParams'  : objectview(GeneralParams)
+                    'GeneralParams'  : objectview(GeneralParams)
             }
 
         return LstmDict
@@ -248,14 +239,14 @@ def GetModelDefaultConfig(USE_CUDA,stock_list,dates_range):
 
     def GetRFRParams(tune = False):
 
-        RFR_params = {'criterion': "mse", 'n_estimators': 300, 'max_depth':10, 'max_features':0.5}
+        RFR_params = {'criterion': "mae", 'n_estimators': 300, 'max_depth':40, 'max_features':0.9}
         RFR_Tune_params = {'n_estimators': [100,200,300,400],'max_depth':[5,10,15], 'max_features':[0.2,0.5,0.7], 'criterion':["mse","mae"]}
     #defines all the possible value to examine that will fir the model best
 
         GeneralParams = {
             'normalization_method': NormalizationMethod.simple, #Naive, #Naive,
-            'prediction_method':    PredictionMethod.close,
-            'smooth_graph': False,
+            'prediction_method':    PredictionMethod.daily_returns,# .close,
+            'smooth_graph_window': 1,
             'num_of_periods': 1
             }
 
@@ -270,15 +261,55 @@ def GetModelDefaultConfig(USE_CUDA,stock_list,dates_range):
     ################################defining model parameters###########################
     '''
     config_net_default  = Network_Params
-    config_net_default.network_model        = NetworkModel.simpleRNN #DualLstmAttn #simpleRNN
-    config_net_default.tune_needed             = False
-    config_net_default.tune_extra_model_needed = False
+    config_net_default.network_model        = NetworkModel.DualLstmAttn #DualLstmAttn #simpleRNN
+    config_net_default.tune_needed             = False #True
+    config_net_default.tune_extra_model_needed = True
 
+    curr_date = time.strftime("%m%d%y")
+    config_net_default.tune_path_clf    = 'lstm trained classifiers list' + curr_date
+    config_net_default.tune_path_score  = 'lstm tuning results list' + curr_date
+    config_net_default.tune_path_params = 'lstm tuning parameters list' + curr_date
+
+    '''
+    ###################################defining Feature list#############################################
+    '''
+
+    time_granularity=TimeGrnularity.daily #TODO- add support for other time granularity as well
+    #allocs_stock_list = [0.25,0.25,0.25,0.25]
+    #total_funds_start_value = 10000
+
+    complete_features   = ['google_trends','close','open','high','low','volume','rolling_mean','rolling_bands','daily_returns','momentum','sma_','b_bonds']
+    master_feature_list  = ['google_trends','close','high','low']
+    #['google_trends','close','high','low','daily_returns','rolling_bands','momentum','b_bonds'] #,'high','low'] #,'high','rolling_mean','rolling_bands']
+    #master_feature_list  = ['google_trends','close','daily_returns','rolling_bands','momentum','b_bonds'] #,'open','high'] #,'open','high','low'] #TODO - add more features
+    branch_feature_list = ['close'] #,'rolling_mean','rolling_bands','daily_returns','momentum','b_bonds']    #branch goal is to give some confidence level as to how probable we will see an increase, in addition to the master model
+
+    my_master_feature_list = MyFeatureList(master_feature_list)
+    my_branch_feature_list = MyFeatureList(branch_feature_list)
+
+    if (config_net_default.network_model == NetworkModel.RandomForestReg):
+        my_master_feature_list = my_branch_feature_list
+
+    AllStocksDf_master = FeatureBuilderMain(
+                    stock_list,
+                    my_master_feature_list,
+                    dates_range,
+                    time_granularity=time_granularity
+                                )
+
+    AllStocksDf_branch = AllStocksDf_master
+        #FeatureBuilderMain(stock_list,my_branch_feature_list,dates_range,time_granularity=time_granularity)
+
+     #TODO - do we want somehow to decide on only part of the features? (using PCA?)
+    '''
+    #######
+    '''
     config_net_default.feature_num          = len(master_feature_list)
     config_net_default.use_cuda             = USE_CUDA
     config_net_default.train_needed         = True
     config_net_default.AddRFConfidenceLevel = False
     config_net_default.stock_name           = None
+    config_net_default.tune_count           = 0
     config_net_default.SaveTrainedModel        = True
     config_net_default.train_data_precentage   = 0.7
     config_net_default.load_best_params        = False
@@ -293,13 +324,17 @@ def GetModelDefaultConfig(USE_CUDA,stock_list,dates_range):
         #return 1
 
     config_net_default.LSTM_HyperParameters = GetLstmParams(config_net_default.tune_needed)
-    config_net_default.LSTM_HyperParameters['ModelParams'].features_num = config_net_default.feature_num
+    config_net_default.LSTM_HyperParameters['ModelParams'].features_num = [config_net_default.feature_num] if config_net_default.tune_needed else config_net_default.feature_num
     config_net_default.RNN_HyperParameters  = GetRnnParams(config_net_default.tune_needed)
     config_net_default.RFC_HyperParameters  = GetRFCParams(config_net_default.tune_needed)
     config_net_default.RFR_HyperParameters  = GetRFRParams(config_net_default.tune_needed)
 
+    config_net_default.feature_list  = master_feature_list
+    config_net_default.tune_periods = 1
+    config_net_default.tune_normalization = None
+
     config_model_default = Config_model
-    config_model_default.feature_list   = master_feature_list
+    #config_model_default.feature_list   = master_feature_list
     config_model_default.Network_Params = config_net_default
 
     #config_net_default.num_of_periods       = 1

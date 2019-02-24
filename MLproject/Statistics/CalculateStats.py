@@ -61,14 +61,17 @@ def GetClassStatList():
     stat_parameters = [attr for attr in all_parameters if not callable(getattr(StatParam, attr)) and not attr.startswith("__")]
     return stat_parameters
 
-def GetBuyVector(y_pred,target_type = PredictionMethod.close):
-
+def GetBuyVector(y_pred,target_type = PredictionMethod.close,buy_threshold = 0):
+    #print("hello from GetBuyVector")
     #TODO - can do here better with using Network to consider bias?
     #print(y_pred)
     if (target_type == PredictionMethod.close):
         next_predicted_value = y_pred[1:]
-        curr_predicted_value = y_pred[0:-1]
-        buy_vector = np.greater(next_predicted_value,curr_predicted_value)
+        curr_predicted_value = y_pred[:-1]
+        #print(next_predicted_value[0:5])
+        #print(curr_predicted_value[0:5])
+        y_pred_with_threshold = np.multiply(1-buy_threshold,next_predicted_value)
+        buy_vector = np.greater(y_pred_with_threshold,curr_predicted_value)
 
     elif (target_type == PredictionMethod.pct_change):
         df_std_rolling = pd.DataFrame(y_pred).rolling(center=False,window=5).std()
@@ -101,26 +104,26 @@ def FalseNegativeRatio(real_value,buy_vector,target_type):
     real_buy_vector = GetBuyVector(real_value,target_type)
     neg_buy_vector = np.invert(buy_vector)
     FN_vec = neg_buy_vector * real_buy_vector
-    return np.sum(FN_vec)/np.sum(neg_buy_vector.astype(int))
+    return np.sum(FN_vec) #/np.sum(neg_buy_vector.astype(int))
 
 def FalsePositiveRatio(real_value,buy_vector,target_type):
     # rate of FP compared to all Negative
     real_buy_vector = GetBuyVector(real_value,target_type)
     neg_days_vec = np.invert(real_buy_vector) #(days_delta_vec <=0)
     FP_vec = buy_vector * neg_days_vec
-    return np.sum(FP_vec)/np.sum(buy_vector)
+    return np.sum(FP_vec) #/np.sum(buy_vector)
 
 def TrueNegativeRatio(real_value,buy_vector,target_type):
     real_buy_vector = GetBuyVector(real_value,target_type)
     neg_days_vec = np.invert(real_buy_vector) #(days_delta_vec <= 0)
     neg_buy_vector = np.invert(buy_vector)
     TN_vec = neg_buy_vector * neg_days_vec
-    return np.sum(TN_vec)/np.sum(neg_buy_vector.astype(int))
+    return np.sum(TN_vec) #/np.sum(neg_buy_vector.astype(int))
 
 def TruePositiveRatio(real_value,buy_vector,target_type):
     real_buy_vector = GetBuyVector(real_value,target_type)
     TP_vec = np.multiply(buy_vector,real_buy_vector)
-    return np.sum(TP_vec)/np.sum(buy_vector)
+    return np.sum(TP_vec) #/np.sum(buy_vector)
 
 def MissingBuyInUpRatio(real_value,buy_vector):
     # decision not to buy although we saw an up slope the day before
@@ -157,12 +160,13 @@ def MeanGain(real_value,buy_vector):
     last_value = real_value[0:-1]
     real_value_shifted = real_value[1:]
     days_delta_ratio = np.subtract(real_value_shifted,last_value)/last_value
+
     gain_vector = buy_vector * days_delta_ratio
+
     mean_gain = gain_vector.sum()/len(days_delta_ratio)
 
     potential_gain = days_delta_ratio * (days_delta_ratio > 0) #take only days the stock increased
     mean_potential_gain = potential_gain.sum()/len(days_delta_ratio)
-
     return mean_gain/mean_potential_gain
 
 def AvgGain(real_value,buy_vector,target_type):
@@ -198,23 +202,41 @@ def MeanError(real_value,predictad_value):
     return error.mean()
 
 
-def CalculateAllStatistics(real_close_value,real_value,predictad_value,target_type,buy_vector = None,plot_buy_decisions = False,curr_model = 'LSTM'): #should include in [0] the previous day
+def CalculateAllStatistics(real_close_value,real_value,predictad_value,target_type,buy_vector = None,plot_buy_decisions = False,curr_model = 'LSTM',buy_threshold = 0): #should include in [0] the previous day
     print('hello from CalculateAllStatistics...')
-    #print(predictad_value[0:100])
-    #print(real_value[0:5])
-    #print(real_value.shape)
 
-    if (real_value.shape[-1] > 1):
+
+    if (real_value.ndim > 2 or (real_value.shape[-1] > 1)):
         real_value = real_value.reshape(real_value.shape[0],-1)
         real_value = real_value[:,-1] #take the last day fron the sequence
-    #print(real_value[0:5])
 
+    #print(real_value[0:5])
+    #print(len(real_close_value))
+    #print(real_value.shape)
+    #print(predictad_value.shape)
     #real_value = real_value.reshape(1,-1)[0]
+
+    #print(predictad_value[0:5])
+    #print(real_value[0:5])
+    #print(target_type)
+
     if buy_vector is None:
-        buy_vector = GetBuyVector(predictad_value,target_type)
+        buy_vector = GetBuyVector(predictad_value,target_type,buy_threshold)
+    #print(len(buy_vector))
 
     true_buy_vector = GetBuyVector(real_value,target_type)
-    tn, fp, fn, tp = confusion_matrix(true_buy_vector,buy_vector).ravel()
+
+    #print(buy_vector[0:5])
+    #print(true_buy_vector[0:5])
+
+    confusion_matrix_res = confusion_matrix(true_buy_vector,buy_vector).ravel()
+    if (confusion_matrix_res.ndim > 1):
+        tn, fp, fn, tp = confusion_matrix(true_buy_vector,buy_vector).ravel()
+    else:
+        tn = TrueNegativeRatio(real_value,buy_vector,target_type)
+        tp = TruePositiveRatio(real_value,buy_vector,target_type)
+        fn = FalseNegativeRatio(real_value,buy_vector,target_type)
+        fp = FalsePositiveRatio(real_value,buy_vector,target_type)
 
     df_prediction_statistics = pd.DataFrame() #columns=GetClassStatList()
 
@@ -227,11 +249,17 @@ def CalculateAllStatistics(real_close_value,real_value,predictad_value,target_ty
     df_prediction_statistics.at[0,'mean_error']                = MeanError(real_value,predictad_value) if target_type == 'reg' else None
     #df_prediction_statistics.at[0,'std']                       = 0
 
-    if (target_type == 'cat'):
+    #if (target_type == 'cat'):
+    #    buy_vector_for_gain = buy_vector[1:]
+    #    true_buy_vector = true_buy_vector[1:]
+    #else:
+
+    if (len(buy_vector)==len(real_close_value)):
         buy_vector_for_gain = buy_vector[1:]
-        true_buy_vector = true_buy_vector[1:]
+        plt_real_close_value = real_close_value
     else:
         buy_vector_for_gain = buy_vector
+        plt_real_close_value = real_close_value[:-1]
 
     close_buy_vector = GetBuyVector(real_close_value,PredictionMethod.close)
 
@@ -270,15 +298,15 @@ def CalculateAllStatistics(real_close_value,real_value,predictad_value,target_ty
     fp_predict[test_buy_set==true_hold_set] = 1
     #print(fp_predict[0:100])
 
-    good_predict  = correct_prediction_vector * real_close_value[:-1]
-    bad_predict   = (1-correct_prediction_vector) * real_close_value[:-1]
+    good_predict  = correct_prediction_vector * plt_real_close_value
+    bad_predict   = (1-correct_prediction_vector) * plt_real_close_value
 
     #we don't want to plot zeroes, only on the stock value
     good_predict [ good_predict==0 ] = np.nan
     bad_predict[ bad_predict==0 ] = np.nan
 
     if plot_buy_decisions:
-        plt_real_close_value = real_close_value[:-1]
+
         x_range = range(len(plt_real_close_value))
 
         fig = plt.figure()
@@ -321,6 +349,6 @@ def CalculateAllStatistics(real_close_value,real_value,predictad_value,target_ty
         #    plt.title('predicted stock and algorithm action with RF classifier combined')
 
         #plt.show(block=False)
-    print(confusion_matrix(true_buy_vector,buy_vector))
+    #print(confusion_matrix(true_buy_vector,buy_vector))
 
     return df_prediction_statistics

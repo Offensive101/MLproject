@@ -1,0 +1,53 @@
+ERROR - ****************** FeatureBuilderMain : MMM*******************
+ERROR - curr config is: (['close'], <NormalizationMethod.StandardScaler: 2>, 2)
+ERROR - stats summary for: INTC
+ERROR - true_negative_ratio       0.000000
+true_positive_ratio     276.000000
+false_negative_ratio      0.000000
+false_positive_ratio     75.000000
+mean_error                     NaN
+mean_gain                -0.018116
+AvgGainEXp_Opt            4.445830
+AvgGainEXp                0.945336
+AvgGainEXp_Rand           0.931417
+AvgGainEXp_Naive          1.248780
+Name: 0, dtype: float64
+ERROR - curr config is: (['google_trends', 'close', 'high'], <NormalizationMethod.StandardScaler: 2>, 2)
+ERROR - stats summary for: INTC
+ERROR - true_negative_ratio       0.000000
+true_positive_ratio     276.000000
+false_negative_ratio      0.000000
+false_positive_ratio     75.000000
+mean_error                     NaN
+mean_gain                -0.018116
+AvgGainEXp_Opt            4.445830
+AvgGainEXp                0.945336
+AvgGainEXp_Rand           0.843307
+AvgGainEXp_Naive          1.248780
+Name: 0, dtype: float64
+ERROR - curr config is: (['close'], <NormalizationMethod.StandardScaler: 2>, 2)
+ERROR - stats summary for: INTC
+ERROR - true_negative_ratio       0.000000
+true_positive_ratio     276.000000
+false_negative_ratio      0.000000
+false_positive_ratio     75.000000
+mean_error                     NaN
+mean_gain                -0.018116
+AvgGainEXp_Opt            4.445830
+AvgGainEXp                0.945336
+AvgGainEXp_Rand           1.124154
+AvgGainEXp_Naive          1.248780
+Name: 0, dtype: float64
+ERROR - curr config is: (['google_trends', 'close', 'high'], <NormalizationMethod.StandardScaler: 2>, 2)
+ERROR - stats summary for: INTC
+ERROR - true_negative_ratio       0.000000
+true_positive_ratio     276.000000
+false_negative_ratio      0.000000
+false_positive_ratio     75.000000
+mean_error                     NaN
+mean_gain                -0.018116
+AvgGainEXp_Opt            4.445830
+AvgGainEXp                0.945336
+AvgGainEXp_Rand           0.802306
+AvgGainEXp_Naive          1.248780
+Name: 0, dtype: float64

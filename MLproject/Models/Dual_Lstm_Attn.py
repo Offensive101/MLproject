@@ -54,17 +54,30 @@ class encoder(nn.Module):
         self.total_x_features = (self.T - 1) * self.features_num
         self.logger = logger
 
-        self.lstm_layer = nn.LSTM(input_size = input_size, hidden_size = hidden_size, num_layers = 1, dropout = lstm_dropout)
-        self.attn_linear = nn.Linear(in_features = 2 * hidden_size + self.total_x_features, out_features = 1)
+        # Fig 1. Temporal Attention Mechanism: Encoder is LSTM
+        self.lstm_layer = nn.LSTM(input_size = self.input_size, hidden_size = self.hidden_size, num_layers = 1, dropout = lstm_dropout)
+
+        # Construct Input Attention Mechanism via deterministic attention model
+        # Eq. 8: W_e[h_{t-1}; s_{t-1}] + U_e * x^k
+        self.attn_linear = nn.Linear(in_features = 2 * hidden_size + self.total_x_features, out_features = 1, bias = True)
 
     def forward(self, input_data):
         input_data_shape = input_data.shape
         #print(input_data_shape)
+        #print("input size: " + str(self.input_size))
+        input_batch = input_data_shape[0]
         input_size = input_data_shape[1]
         input_len  = input_data_shape[2]
         # input_data: batch_size * T - 1 * input_size
-        input_weighted = Variable(input_data.data.new( self.total_x_features, input_data.size(0),self.input_size).zero_())
-        input_encoded = Variable(input_data.data.new(self.total_x_features, input_data.size(0),  self.hidden_size).zero_())
+        input_weighted = Variable(input_data.data.new(input_batch, self.T -1,self.input_size).zero_())
+        input_encoded = Variable(input_data.data.new(input_batch, self.T -1, self.hidden_size).zero_())
+
+        # Eq. 8, parameters not in nn.Linear but to be learnt
+        # v_e = torch.nn.Parameter(data=torch.empty(
+        #     self.input_size, self.T).uniform_(0, 1), requires_grad=True)
+        # U_e = torch.nn.Parameter(data=torch.empty(
+        #     self.T, self.T).uniform_(0, 1), requires_grad=True)
+
         # hidden, cell: initial states with dimension hidden_size
         hidden = self.init_hidden(input_data) # 1 * batch_size * hidden_size
         cell = self.init_hidden(input_data)
@@ -74,54 +87,64 @@ class encoder(nn.Module):
         #logging.debug("input_data shape: " + str(input_data.shape))
         #logging.debug("input_size: " + str(self.input_size))
 
-        #logging.debug("hidden_size: " + str(self.hidden_size))
-        #logging.debug(hidden.shape)
-        #logging.debug("self.T: " + str(self.T))
+        #print("hidden_size: " + str(self.hidden_size))
+        #print(hidden.shape)
+        #print("self.T: " + str(self.T))
 
-        for t in range(self.total_x_features):
+        for t in range(self.T - 1):
             # Eqn. 8: concatenate the hidden states with each predictor
-            #logging.debug("enocder prints: ")
+            # batch_size * input_size * (2*hidden_size + T - 1)
 
+            #logging.debug("enocder prints: ")
+            #print(hidden.repeat(self.input_size, 1, 1).permute(0, 1, 2).shape)
             x = torch.cat((hidden.repeat(self.input_size, 1, 1).permute(1, 0, 2),
                            cell.repeat(self.input_size, 1, 1).permute(1, 0, 2),
-                           input_data.permute(0,1,2)), dim = 2) # batch_size * input_size * (2*hidden_size + T - 1)
+                           input_data.permute(0,2,1)), dim = 2) # batch_size * input_size * (2*hidden_size + T - 1)
+
             #print(x.shape)
             #logging.debug("x_shape: " + str(x.shape))
 
             # Eqn. 9: Get attention weights
-            batch_size = input_data.shape[1]
 
             #print(input_len)
             #print(self.hidden_size)
 
             #print(self.total_x_features)
-            x = self.attn_linear(x.view(-1, self.hidden_size * 2 + input_len)) # (batch_size * input_size) * 1     self.hidden_size * 2 + input_len
-            x_softmax = x.view(-1, input_size)
+            total_features = self.total_x_features
+            #print(x.view(-1, self.hidden_size * 2 + total_features).shape)
+            x = self.attn_linear(x.view(-1, self.hidden_size * 2 + total_features)) # self.hidden_size * 2 + input_len (num of features)
+            #print(x.shape)
+            # get weights by softmax
+            x_softmax = x.view(-1, self.input_size) #per seq length
+            #print(x_softmax.shape)
             input_dim = x_softmax.dim()
             softmax_dim = 0 if (input_dim == 0 or input_dim== 1 or input_dim == 3) else 1
 
             attn_weights = F.softmax(x_softmax,dim = softmax_dim) # batch_size * input_size, attn weights with values sum up to 1.
             # Eqn. 10: LSTM
-            weighted_input = torch.mul(attn_weights, input_data[:, :, t]) # batch_size * input_size
-            weighted_input = weighted_input.unsqueeze(0).permute(2, 1, 0)
-
+            # get new input for LSTM
+            weighted_input = torch.mul(attn_weights, input_data[:, t, :]) # batch_size * input_size
+            #weighted_input = weighted_input.unsqueeze(0).permute(2, 1, 0)
             #print(weighted_input.shape)
 
+            # encoder LSTM
             # Fix the warning about non-contiguous memory
             # see https://discuss.pytorch.org/t/dataparallel-issue-with-flatten-parameter/8282
             self.lstm_layer.flatten_parameters()
-            _, lstm_states = self.lstm_layer(weighted_input, (hidden, cell))
+            _, lstm_states = self.lstm_layer(weighted_input.unsqueeze(0), (hidden, cell))
             hidden = lstm_states[0]
             cell = lstm_states[1]
             # Save output
-            input_weighted[t, :, :] = weighted_input
-            input_encoded[t, :, :]  = hidden
+            input_weighted[:, t, :] = weighted_input
+            input_encoded[:, t, :]  = hidden
 
-        return input_weighted.permute(1,0,2), input_encoded.permute(1,0,2)
+        return input_weighted, input_encoded
 
     def init_hidden(self, x):
         # No matter whether CUDA is used, the returned variable will have the same type as x.
-        return Variable(x.data.new(1, x.size(0), self.hidden_size).zero_()) # dimension 0 is the batch dimension
+        # hidden state and cell state [num_layers*num_directions, batch_size, hidden_size]
+        # https://pytorch.org/docs/master/nn.html?#lstm
+        return Variable(x.data.new(1, x.size(0), self.hidden_size).zero_())
 
 class decoder(nn.Module):
     def __init__(self, encoder_hidden_size, decoder_hidden_size, T,features_num, logger, lstm_dropout):
@@ -157,25 +180,28 @@ class decoder(nn.Module):
         #logging.debug(cell.shape)
         #logging.debug(input_encoded.shape)
 
-        for t in range(self.total_x_features):
+        for t in range(self.T - 1):
             # Eqn. 12-13: compute attention weights
             ## batch_size * T * (2*decoder_hidden_size + encoder_hidden_size)
-            x = torch.cat((hidden.repeat(self.total_x_features, 1, 1).permute(1, 0, 2),
-                           cell.repeat(self.total_x_features, 1, 1).permute(1, 0, 2),
-                           input_encoded.permute(0,1,2)), dim = 2)
+            x = torch.cat((hidden.repeat(self.T - 1, 1, 1).permute(1, 0, 2),
+                           cell.repeat(self.T - 1, 1, 1).permute(1, 0, 2),
+                           input_encoded), dim = 2)
 
             #logging.debug("decoder x_shape: " + str(x.shape))
 
             x = F.softmax(self.attn_layer(x.view(-1, 2 * self.decoder_hidden_size + self.encoder_hidden_size
-                                                )).view(-1, self.total_x_features), dim = 1) # batch_size * T - 1, row sum up to 1
+                                                )).view(-1, self.T - 1), dim = 1) # batch_size * T - 1, row sum up to 1
             # Eqn. 14: compute context vector
             context = torch.bmm(x.unsqueeze(1), input_encoded)[:, 0, :] # batch_size * encoder_hidden_size
 
-            y_history = y_history.repeat(1,self.features_num)
+            #y_history = y_history.repeat(1,self.features_num)
             #logging.debug(y_history.shape)
 
-            if t < self.total_x_features:
+            if t < self.T - 1:
                 # Eqn. 15
+                #print(y_history.shape)
+                #print(y_history[:,t])
+                #print(context.shape)
                 y_tilde = self.fc(torch.cat((context, y_history[:, t].unsqueeze(1)), dim = 1)) # batch_size * 1
                 # Eqn. 16: LSTM
                 self.lstm_layer.flatten_parameters()
@@ -217,19 +243,25 @@ class PnLLoss:
     def forward(self, input, target):
         #need to insert +1 day, to calculate the derivative from last day
         buy_vector_diff = input - target
+        #print(input[0:10])
+        #print(target[0:10])
 
         input_prev  = input[0:-1]
         input_curr  = input[1:]
         target_prev = target[0:-1]
         target_curr = target[1:]
 
-        input_slope  = input_prev > input_prev
+        input_slope  = input_curr > target_prev #input_prev
         target_slope = target_curr > target_prev
 
         fp_vector = np.logical_and((1-input_slope), target_slope)
         fn_vector = np.logical_and(input_slope, ~target_slope)
 
         tpn_vector = input_slope == target_slope
+
+        #print(fp_vector[0:10])
+        #print(fn_vector[0:10])
+        #print(tpn_vector[0:10])
 
         false_positive_penalty = 0.65
         false_negative_penalty = 0.25 #TOD0 - Change to parameter
@@ -253,13 +285,13 @@ class PnLLoss:
                 fp_vector)
 
         fn_mse_error = calc_mse_error(
-                false_positive_penalty,
+                false_negative_penalty,
                 input_curr,
                 target_curr,
                 fn_vector)
 
         t_mse_error = calc_mse_error(
-                false_positive_penalty,
+                true_pn_diff_penalty,
                 input_curr,
                 target_curr,
                 tpn_vector)
@@ -272,7 +304,7 @@ class da_rnn(nn.Module):
     def __init__(self, input_size, encoder_hidden_size = 64, decoder_hidden_size = 64, T = 10, features_num= 1,
                  learning_rate = 0.01, batch_size = 128, num_epochs = 10, lstm_dropout = 0, loss_method = LossFunctionMethod.mse, parallel = False, debug = False):
         super(da_rnn, self).__init__()
-        self.T = T+1
+        self.T = T
         self.logger = logging
         self.type = "reg" #other option can be categorial
 
@@ -296,9 +328,15 @@ class da_rnn(nn.Module):
         self.decoder_optimizer = optim.Adam(params = filter(lambda p: p.requires_grad, self.decoder.parameters()),
                                            lr = learning_rate)
 
+        #self.lr_scheduler_encoder = optim.lr_scheduler.ReduceLROnPlateau(self.encoder_optimizer, verbose=True,patience=5)
+        #self.lr_scheduler_decoder = optim.lr_scheduler.ReduceLROnPlateau(self.decoder_optimizer, verbose=True,patience=5)
+
     def Train(self, X_train, y_history,y_train, X_test,y_test,plot_results = True,curr_stock = 'na'):
         #X_train,y_history has to come in as a DF
         logging.debug("**** in Dual LSTM train *****")
+        y_train = y_train.reshape(y_train.shape[0],-1)[:,-1]
+        y_train = np.expand_dims(y_train, axis=1)
+
         train_size = X_train.shape[0]
         loss_method = self.loss_method
         iter_per_epoch = int(np.ceil(train_size * 1. / self.batch_size))
@@ -321,24 +359,27 @@ class da_rnn(nn.Module):
             #perm_idx = np.random.permutation(train_size)
             perm_idx = np.arange(train_size)
             j = 0
-
+            running_loss = 0.0
             while j < train_size:# -  self.T
                 batch_idx = perm_idx[j:(j + self.batch_size)]
+                #print(X_train[0:10])
 
-                y_curr_target     = np.take(y_train,batch_idx)
-                x_curr_train      = X_train.iloc[batch_idx]
-                y_curr_history    = y_history.iloc[batch_idx]
+                y_curr_target     = np.take(y_train,batch_idx, axis=0)
+                x_curr_train      = np.take(X_train,batch_idx, axis=0) #X_train.iloc[batch_idx]
+                y_curr_history    = np.take(y_history,batch_idx, axis=0) #y_history.iloc[batch_idx]
+                #print(x_curr_train[0:10])
+                #print(y_curr_target[0:10])
+                #y_curr_target  = np.expand_dims(y_curr_target, axis=1)
 
-                y_curr_target  = np.expand_dims(y_curr_target, axis=1)
-
-                x_curr_train, y_curr_history = Variable(torch.tensor(x_curr_train.values).type(torch.FloatTensor)), Variable(torch.tensor(y_curr_history.values).type(torch.FloatTensor)),
+                x_curr_train, y_curr_history = Variable(torch.tensor(x_curr_train).type(torch.FloatTensor)), Variable(torch.tensor(y_curr_history).type(torch.FloatTensor)),
                 y_curr_target = Variable(torch.from_numpy(y_curr_target).type(torch.FloatTensor))
                 #if (y_train.ndim > 1):
-
-                x_curr_train = torch.unsqueeze(x_curr_train, 1)
-                #y_history    = torch.unsqueeze(y_history, 2)
+                #print("x_curr_train" , x_curr_train.shape)
+                #print("y_curr_history", y_curr_history.shape)
+                #print("y_curr_target", y_curr_target.shape)
 
                 loss = self.train_iteration(x_curr_train, y_curr_history, y_curr_target)
+                running_loss += loss
                 self.iter_losses[i * iter_per_epoch + int(j / self.batch_size)] = loss
                 #if (j / self.batch_size) % 50 == 0:
                 #    self.logger.info("Epoch %d, Batch %d: loss = %3.3f.", i, j / self.batch_size, loss)
@@ -351,15 +392,19 @@ class da_rnn(nn.Module):
                     for param_group in self.decoder_optimizer.param_groups:
                         param_group['lr'] = param_group['lr'] * 0.9
 
-            #TODO - change losses to mean istead of sum
+           # self.lr_scheduler_decoder.step(running_loss)
+           # self.lr_scheduler_encoder.step(running_loss)
+            #TODO - change losses to mean instead of sum
             self.epoch_losses[i] = np.sum(self.iter_losses[range(i * iter_per_epoch, (i + 1) * iter_per_epoch)])
 
-            if (i+1) % 50 == 0:
-                logging.info("Epoch %d, loss: %3.4f.", i, self.epoch_losses[i])
+            if (i+1) % 200 == 0:
+                print("Epoch " + str(i) + " loss: " + str(self.epoch_losses[i]))
 
+            plot_results = True
             if (plot_results==True):
                 if (i % 1000 == 0) and i > 0:
                     #y_train_pred = self.Predict(on_train = True)\
+                    y_test = y_test.reshape(y_test.shape[0],-1)[:,-1]
                     y_test_pred = self.Predict(X_test,y_test,on_train = False)
                     j=0
                     while j < 0: #len(y_pred):
@@ -370,6 +415,12 @@ class da_rnn(nn.Module):
                     #plt.ion()
                     fig = plt.figure()
                     y_all = y_test #np.concatenate((y_train, y_test)) # y_test
+                    #print(y_all.shape)
+                    #print(y_test_pred.shape)
+                    y_all       = y_all.ravel()
+                    y_test_pred = y_test_pred.ravel()
+                    #print(y_all.shape)
+                    #print(y_test_pred.shape)
                     ax = fig.add_subplot(2,1,1)
                     ax.plot(y_all, label = "True")
                     ax.plot(y_test_pred, label = 'Predicted - Test')
@@ -379,17 +430,20 @@ class da_rnn(nn.Module):
                     ax.set_title("epoch of : " + str(i) + " learning rate of " + str(self.learning_rate))
                     ax.legend(loc = 'upper left')
                     epoch_str = curr_stock + ' ' + str(i)
-                    fig.savefig(epoch_str + ' train with test pred time-line' + '.png')
-                    #plt.show(block=False)
+                    plt.show(block=False)
+                    fig.savefig(epoch_str + 'LSTM train with test pred time-line' + '.png')
+
             #if self.epoch_losses[i] < 0.0001:
             #    break
 
         if (plot_results==True):
             plt.figure()
-            print(self.epoch_losses[500:])
+            #print(self.epoch_losses[500:])
             plt.plot(self.epoch_losses[500:], label = "epoch training losses")
             plt.title(curr_stock + " losses as a function of epochs")
             plt.savefig(curr_stock + ' losses as a function of epochs' + '.png')
+
+        return self.epoch_losses,self.decoder_optimizer,self.encoder_optimizer
 
     def train_iteration(self, x_train, y_history, y_target):
         self.encoder_optimizer.zero_grad()
@@ -400,6 +454,10 @@ class da_rnn(nn.Module):
 
         loss_input = y_pred
         loss_target = y_target
+        #print("y_pred")
+        #print(y_pred)
+        #print("y_target")
+        #print(y_target)
 
         loss = self.loss_func.forward(loss_input, loss_target)
         loss.backward()
@@ -416,128 +474,28 @@ class da_rnn(nn.Module):
         i = 0
         perm_idx = np.arange(test_length)
 
+        #print(X_test.shape)
+        y_history_test = X_test.reshape(X_test.shape[0],-1)
+        #print(y_history_test.shape)
+
         while i < test_length:
             batch_idx = perm_idx[i : (i + self.batch_size)]
 
-            x_curr_test         = X_test.iloc[batch_idx]
-            y_curr_test_history = X_test.iloc[batch_idx] #TODO - change to y test history, need to understand from paper what is the difference
+            x_curr_test         = np.take(X_test,batch_idx, axis=0)
+            y_curr_test_history = np.take(y_history_test,batch_idx, axis=0)
 
-            x_curr_test, y_curr_test_history = Variable(torch.tensor(x_curr_test.values).type(torch.FloatTensor)), Variable(torch.tensor(y_curr_test_history.values).type(torch.FloatTensor)),
+            x_curr_test, y_curr_test_history = Variable(torch.tensor(x_curr_test).type(torch.FloatTensor)), Variable(torch.tensor(y_curr_test_history).type(torch.FloatTensor)),
 
             ##logging.debug("x_curr_test shape: ")
             ##logging.debug(x_curr_test.shape)
-            x_curr_test = torch.unsqueeze(x_curr_test, 1)
+            #x_curr_test = torch.unsqueeze(x_curr_test, 1)
 
             _, input_encoded = self.encoder(x_curr_test)
             y_pred_curr = self.decoder(input_encoded, y_curr_test_history).cpu().data.numpy()[:, 0]
+            #print(y_pred_curr.shape)
             y_pred = np.concatenate((y_pred, y_pred_curr), axis=0)
 
             i += self.batch_size
 
         return y_pred
 
-
-def tune(classifier,X, y_history, y,x_test,y_test, input_size, arguments, cv=5,curr_stock = 'na'):
-    '''
-    This method is doing exactly what GridSearchCV is doing for a sklearn classifier.
-    It will run cross validation training with cv folds many times. Each time it will evaluate the CV "performance" on a different
-    combination of the given arguments. You should check every combination of the given arguments and return a dictionary with
-    the best argument combination. For classification, "performance" is accuracy. For Regression, "performance" is mean square error.
-
-    classifier: it's the WRF classifier to tune
-    X, y: the dataset to tune over
-    arguments: a dictionary with keys are one of n_trees, max_depth, n_features, weight_type
-    and the values are lists of values to test for each argument (see more in GridSearchCV)
-    '''
-    kf = KFold(n_splits=cv)
-
-    grid = ParameterGrid(arguments)
-    best_error = np.inf
-    best_error_slope = np.inf
-    best_profit = 0
-
-    error_slope_list = []
-    error_list = []
-    profit_list = []
-    params_list = []
-
-  #X_df = pd.DataFrame(X)
-  #y_df = pd.DataFrame(y)
-    total_params = len(grid)
-    p = 0
-
-    for params in grid:
-        classifier.__init__(input_size,**params)
-
-        print("parameters iter in GridSearch is: " + str(p) + " out of: " + str(total_params))
-        print(params)
-        p = p+1
-        clf_curr = classifier
-        profit = 0
-        error = 0
-        error_slope = 0
-        ok = True
-        if (ok==True):
-        #for train_index, test_index in kf.split(X):
-            #X_train, X_test = X_df.iloc[train_index], X_df.iloc[test_index]
-            #y_train, y_test = y_df.iloc[train_index], y_df.iloc[test_index]
-            #X = pd.DataFrame(X)
-            #X_train, X_test = X.iloc[train_index], X.iloc[test_index] #np.take(X, train_index,out=new_shape), np.take(X, test_index)
-            #y_history = pd.DataFrame(y_history)
-            #y_train_history = y_history.iloc[train_index]
-
-            #y_train, y_test = np.take(y, train_index), np.take(y, test_index)
-            ##logging.debug(y_train.shape)
-            X_train,y_train_history,y_train,X_test,y_test = X, y_history, y,x_test,y_test
-            clf_curr.Train(X_train,y_train_history,y_train,X_test,y_test,plot_results = False,curr_stock = curr_stock)
-            y_pred = np.array(clf_curr.Predict(X_test,y_test))
-
-            ##logging.debug("y_pred & y_test shape: ")
-            ##logging.debug(str(y_pred.shape) + str(y_test.shape))
-
-            #y_test = y_test.values.T.tolist()
-            if (classifier.type=='cat'):
-                y_error = np.equal(y_pred,y_test)
-                error = error + y_error.sum()/len(y_test)
-            else:
-                buy_vector  = GetBuyVector(y_pred)
-                curr_profit = AvgGain(y_test,buy_vector)
-
-                y_previous_true = y_test[0:-1]
-                y_current_true  = y_test[1:]
-                y_previous_pred = y_pred[0:-1]
-                y_current_pred  = y_pred[1:]
-
-                y_true_slope = y_current_true > y_previous_true
-                y_pred_slope = y_current_pred > y_previous_pred
-
-                y_pred_direction_false = y_true_slope != y_pred_slope
-
-                error_slope = error_slope + y_pred_direction_false.sum()
-                error = error + sklearn.metrics.mean_squared_error(y_test,y_pred)
-                profit = profit + curr_profit
-                print("curr profit is: " + str(curr_profit))
-        if error < best_error:
-            best_params = params
-            best_error = error
-
-        if error_slope < best_error_slope:
-            best_params_slope = params
-            best_error_slope = error_slope
-
-        if profit > best_profit:
-            best_params_profit = params
-            best_profit = profit
-
-        error_slope_list.append(error_slope)
-        error_list.append(error)
-        profit_list.append(profit)
-        params_list.append(params)
-
-    df_err_summary = pd.DataFrame()
-    df_err_summary['parameters'] = params_list
-    df_err_summary['error'] = error_list
-    df_err_summary['slope_error'] = error_slope_list
-    df_err_summary['profit'] = profit_list
-
-    return best_params,best_params_slope,best_params_profit,df_err_summary

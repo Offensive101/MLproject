@@ -26,6 +26,7 @@ class RnnSimpleModel(nn.Module):
         self.input_seq_len = input_seq_len
         self.input_size = input_size
         self.num_layers = 2
+        self.output_size = output_size
 
         self.rnn = nn.RNN(input_size, rnn_hidden_size,
                                 num_layers=self.num_layers, nonlinearity='relu',
@@ -48,20 +49,26 @@ class RnnSimpleModel(nn.Module):
         out, self.h_0 = self.rnn(x, self.h_0)
 
         out = self.linear(out)
-
         #out = self.linear(out)
         # third_output = self.relu(self.linear3(second_output))
         # fourth_output = self.relu(self.linear4(third_output))
         # output = self.rnn(lineared_output)
         # output = self.dropout(output)
-        return out
+        return out, self.h_0
 
     def initialize_hidden(self, rnn_hidden_size):
         # n_layers * n_directions, batch_size, rnn_hidden_size
+        torch.backends.cudnn.deterministic = True
+        torch.manual_seed(999)
+
+        if torch.cuda.is_available():
+            torch.backends.cudnn.deterministic = True
+            torch.cuda.manual_seed_all(999)
+
         return Variable(torch.randn(self.num_layers, self.input_seq_len, rnn_hidden_size),
                         requires_grad=True)
 
-def Train(input_size,input_seq_len, clf_type,hidden_size, output_size, train_loader,file_path,learning_rate=0.001,num_epochs = 100):
+def Train(input_size,input_seq_len, clf_type,hidden_size, output_size, train_loader,file_path,learning_rate,num_epochs,optimizer_eps,optimizer_amsgrad):
     #plt.figure(1, figsize=(12, 5))
 
     model = RnnSimpleModel(input_size,input_seq_len, hidden_size, output_size)
@@ -71,9 +78,11 @@ def Train(input_size,input_seq_len, clf_type,hidden_size, output_size, train_loa
     #except:
     #    model = RnnSimpleModel(input_size, hidden_size, output_size)
 
-    train_start_t0 = time.time()
-    criterion = nn.MSELoss() if clf_type=='reg' else GeneralModelFn.loss_multi_label_fn #nn.BCEWithLogitsLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    #train_start_t0 = time.time()
+    #criterion = nn.MSELoss() if clf_type=='reg' else GeneralModelFn.loss_multi_label_fn #nn.BCEWithLogitsLoss()
+    criterion = GeneralModelFn.loss_fn
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate,eps=optimizer_eps,amsgrad=optimizer_amsgrad)
 
     epochs = num_epochs
     total_epoch_loss = []
@@ -84,62 +93,111 @@ def Train(input_size,input_seq_len, clf_type,hidden_size, output_size, train_loa
     loss_step_time            = []
     epoch_step_time           = []
 
+    model_params = model.parameters()
+
     for epoch in range(epochs):
-        epoch_start_t0 = time.time()
+        #epoch_start_t0 = time.time()
         predictions = []
         correct_values = []
         running_loss = 0.0
-        logging.error("SimpleRnn: epoch num: " + str(epoch))
+        #logging.error("SimpleRnn: epoch num: " + str(epoch))
         #logging.error(str(epoch))
 
         for i, data in enumerate(train_loader):
             #logging.debug("SimpleRnn: batch num: ")
             #logging.debug(str(i))
             xs, ys = data['features'], data['value']
-            xs, ys = Variable(xs), Variable(ys)
-            xs = xs.float()
-            ys = ys.float()
-            ys_size = ys.size()
+            #xs = xs.float()
+            #ys = ys.float()
+            #ys_size = ys.shape
             #print(ys_size)
-            ys.data = np.reshape(ys.data, (-1,ys_size[0],1)) # ,ys_size[1]
+            #view_start_t0 = time.time()
+            ys = ys.view(input_seq_len,-1,output_size)
 
-            logging.debug("SimpleRnn: train data for x,y are: ")
-            logging.debug(xs.size())
-            logging.debug(ys.size())
-            y_pred = model(xs)
+            #ys = np.reshape(ys, (-1,ys_size[0],1)) # ,ys_size[1]
+            #print(ys_size)
+            #print("view time")
+            #print(time.time() - view_start_t0)
+
+            #view_start_t0 = time.time()
+            xs, ys = Variable(xs.type(torch.FloatTensor)), Variable(ys.type(torch.FloatTensor))
+            #print("Variable time")
+            #print(time.time() - view_start_t0)
+
+            #logging.debug("SimpleRnn: train data for x,y are: ")
+            #logging.debug(xs.size())
+            #logging.debug(ys.size())
+            #view_start_t0 = time.time()
+            y_pred, hidden = model(xs)
+            #print("model time")
+            #print(time.time() - view_start_t0)
             #predictions = nn.functional.softmax(y_pred, dim=2)
             #print(predictions)
-            logging.debug("y_pred is: ")
-            logging.debug(y_pred.size())
-            loss_start_t0 = time.time()
+            #logging.debug("y_pred is: ")
+            #print(y_pred.size())
+            #loss_start_t0 = time.time()
             loss = criterion(y_pred, ys)
-            loss_step_time.append(time.time() - loss_start_t0)
-            optimizer_start_t0 = time.time()
+            #print("loss time")
+            #print(time.time() - loss_start_t0)
+            #loss_step_time.append(time.time() - loss_start_t0)
+            #optimizer_start_t0 = time.time()
             optimizer.zero_grad()
-            optimizer_zero_grad_time.append(time.time() - optimizer_start_t0)
-            backward_start_t0 = time.time()
-            loss.backward(retain_graph=True)
-            backward_step_time.append(time.time() - backward_start_t0)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
-            optimizer_step_start_t0 = time.time()
+            #print("optimizer zero_grad time")
+            #print(time.time() - optimizer_start_t0)
+            #optimizer_zero_grad_time.append(time.time() - optimizer_start_t0)
+            #backward_start_t0 = time.time()
+            loss.backward() #retain_graph=True
+            #print("loss backward time")
+            #print(time.time() - backward_start_t0)
+            #backward_step_time.append(time.time() - backward_start_t0)
+
+            #clip_grad_norm_start_t0 = time.time()
+            torch.nn.utils.clip_grad_norm_(model_params, 0.5)
+            #print("clip_grad_norm time")
+            #print(time.time() - clip_grad_norm_start_t0)
+            #optimizer_step_start_t0 = time.time()
             optimizer.step()
-            optimizer_step_time.append(time.time() - optimizer_step_start_t0)
+            model.h_0 = model.h_0.detach()
+            #print("optimizer_step time")
+            #print(time.time() - optimizer_step_start_t0)
+            #optimizer_step_time.append(time.time() - optimizer_step_start_t0)
             # print statistics
             running_loss += loss.item()
            # if i % 5 == 0:    # print every 2000 mini-batches
            #     print('[%d, %5d] loss: %.3f' %
            #           (epoch + 1, i + 1, running_loss / 5))
            #     running_loss = 0.0
-
-            predictions.append(y_pred.cpu().data.numpy().ravel())
-            correct_values.append(ys.cpu().data.numpy().ravel())
+            y_pred_numpy_flat = y_pred.cpu().data.numpy().ravel()
+            y_true_numpy_flat = ys.cpu().data.numpy().ravel()
+            predictions.append(y_pred_numpy_flat)
+            correct_values.append(y_true_numpy_flat)
+        #print("epoch time: ")
+        #print(time.time() - epoch_start_t0)
 
         curr_epoch_loss = running_loss/len(train_loader)
         total_epoch_loss.append(curr_epoch_loss)
 
-        print("current epoch mean loss is: ")
-        print(curr_epoch_loss)
+        #if ((epoch+1)%10==0):
+        print("current epoch: " + str(epoch+1) + " mean loss is: " + str(curr_epoch_loss))
         running_loss = 0.0
+        print(y_pred_numpy_flat)
+        print(y_pred_numpy_flat[1:] > y_pred_numpy_flat[:-1])
+        print(y_true_numpy_flat)
+        print(y_true_numpy_flat[1:] > y_true_numpy_flat[:-1])
+        #print('optimiser time')
+        #print()
+        #print(backward_step_time)
+        #print()
+        #print(optimizer_zero_grad_time)
+        #print()
+        #print(loss_step_time)
+        #print()
+        #print(epoch_step_time)
+
+        backward_step_time        = []
+        optimizer_zero_grad_time  = []
+        loss_step_time            = []
+        poch_step_time           = []
 
         def stacking_for_charting(given_list):
             ret = np.array([0])
@@ -147,35 +205,36 @@ def Train(input_size,input_seq_len, clf_type,hidden_size, output_size, train_loa
                 ret = np.hstack((ret, i.ravel()))
             return ret[1:]
 
-        predictions_for_chart = stacking_for_charting(predictions)
-        correct_values_for_chart = stacking_for_charting(correct_values)
+        debug = False
 
-        steps = np.linspace(epoch*predictions_for_chart.shape[0],
+        if (debug == True):
+            predictions_for_chart = stacking_for_charting(predictions)
+            correct_values_for_chart = stacking_for_charting(correct_values)
+
+            steps = np.linspace(epoch*predictions_for_chart.shape[0],
                             (epoch+1)*predictions_for_chart.shape[0],
-
                             predictions_for_chart.shape[0])
-        if epoch==(epochs-1):
-            fig = plt.figure()
-            ax = fig.add_subplot(2,1,1)
-            ax.plot(steps, predictions_for_chart, 'r-')
-            ax.plot(steps, correct_values_for_chart, 'b-')
-            #plt.draw()
-            #plt.pause(0.05)
-            #plt.show(block = False)
-            fig.savefig('true and pred values as a function of time' + '.png')
+            if (True): # epoch==(epochs-1):
+                fig = plt.figure()
+                ax = fig.add_subplot(2,1,1)
+                ax.plot(steps, predictions_for_chart, 'r-', label = "predicted")
+                ax.plot(steps, correct_values_for_chart, 'b-', label = "true")
+                plt.draw()
+                plt.pause(0.05)
+                plt.show(block = False)
+                fig.savefig('RNN true and pred values as a function of time, epoch' + str(epoch) + '.png')
 
-        epoch_step_time.append(time.time() - epoch_start_t0)
-
+        #epoch_step_time.append(time.time() - epoch_start_t0)
 
     logging.info("all epochs loss are: ")
     logging.info(total_epoch_loss)
 
 
-    train_total_time = train_start_t0 - time.time()
+    #train_total_time = train_start_t0 - time.time()
     torch.save(model.state_dict(), file_path)
 
-    logging.info("train_total_time: ")
-    logging.info(train_total_time)
+    #logging.info("train_total_time: ")
+    #logging.info(train_total_time)
 
     logging.info("optimizer_step_time: " )
     logging.info(optimizer_step_time)
@@ -217,14 +276,16 @@ def Predict(model,loss_fn, test_loader,metrics,cuda=False):
         labels_batch = labels_batch.float()
 
         # compute model output
-        output_batch = model(data_batch)
+        output_batch,hidden = model(data_batch)
         #print(output_batch)
         #print(labels_batch)
         labels_batch_size = labels_batch.size()
-        #print(labels_batch.data)
         #print(labels_batch_size)
-        labels_batch.data = np.reshape(labels_batch.data, (labels_batch_size[-1]))
-        output_batch.data = np.reshape(output_batch.data, (labels_batch_size[-1]))
+        #print(output_batch.size())
+        output_batch = output_batch.permute(1,2,0)
+        #print(output_batch.size())
+        #labels_batch.data = np.reshape(labels_batch.data, (labels_batch_size[-1]))
+        #output_batch.data = np.reshape(output_batch.data, (labels_batch_size[-1]))
 
         loss = loss_fn(output_batch, labels_batch)
 
@@ -233,11 +294,13 @@ def Predict(model,loss_fn, test_loader,metrics,cuda=False):
         labels_batch = labels_batch.data.cpu().numpy()
         #print(labels_batch)
         #print(output_batch)
-        output_batch = [output_batch[-1]]
-        labels_batch = labels_batch[-1]
+        output_batch = output_batch[:,-1]
+        output_batch = output_batch[:,-1]
+        #labels_batch = labels_batch[:,-1]
         #print(labels_batch)
-        #print(output_batch)
-
+        #print(output_batch.flatten())
+        #print(output_batch[:,-1])
+        #print(output_batch[1])
         # compute all metrics on this batch
         #summary_batch = {metric: metrics[metric](output_batch, labels_batch)
         #                 for metric in metrics}
@@ -279,5 +342,8 @@ def loss_fn(outputs, labels):
     Note: you may use a standard loss function from http://pytorch.org/docs/master/nn.html#loss-functions. This example
           demonstrates how you can easily define a custom loss function.
     """
+
+
+
     num_examples = outputs.size()[0]
     return -torch.sum(outputs[range(num_examples), labels])/num_examples

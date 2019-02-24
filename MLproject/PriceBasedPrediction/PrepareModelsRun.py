@@ -3,6 +3,7 @@ Created on Jan 13, 2019
 
 @author: mofir
 '''
+from __future__ import division
 
 import torch
 import torch.nn as nn
@@ -10,13 +11,15 @@ import numpy as np
 import pandas as pd
 from pandas import ExcelWriter
 
+import time
+
 from PriceBasedPrediction.RunsParameters import NetworkModel
 from PriceBasedPrediction.RunsParameters import LossFunctionMethod
 from PriceBasedPrediction.RunsParameters import objectview
 
 from PriceBasedPrediction.PrepareData import ConstructTestData,CreateDataset,GetDataVal
 from utils.loggerinitializer import *
-
+import utils.SaveLoadObject as SaveLoadObject
 from Models import SimpleRNN, Dual_Lstm_Attn
 from Models.SimpleRNN import RnnSimpleModel
 from Models.Dual_Lstm_Attn import da_rnn
@@ -115,36 +118,219 @@ def GetEnsembleLearnersPred(learners_df,y_test, type = 'reg'):
 
     return pred_df
 
+def TuneClassifiers(real_close_value,y_test_list,y_pred_list,params_list,general_params,clf_type,curr_model,total_epoch_loss):
+    best_index_params = 0
+
+    best_error = np.inf
+    best_profit_with_buy_th = np.inf
+    best_profit = 0
+
+    best_profit_with_buy_th_list = []
+    error_list = []
+    profit_list = []
+    raw_profit_list = []
+    opt_profit_list = []
+
+    df_err_summary_list =[]
+    df_y_pred_vs_test_list = []
+    epoch_losses_list =[]
+
+    i = 0
+    for y_pred,y_test in zip(y_pred_list,y_test_list):
+        curr_params = params_list[i]
+
+        prediction_stats_df = CalcSt(real_close_value,y_test,y_pred,clf_type,plot_buy_decisions = False,curr_model = curr_model).loc[0]
+        prediction_stats_df_with_th = CalcSt(real_close_value,y_test,y_pred,clf_type,plot_buy_decisions = False,curr_model = curr_model,buy_threshold=0.005).loc[0]
+
+        tp,tn = prediction_stats_df['true_positive_ratio'],prediction_stats_df['true_negative_ratio']
+        fp,fn = prediction_stats_df['false_positive_ratio'],prediction_stats_df['false_negative_ratio']
+
+        total_pos = tp + fp
+        total_neg = tn + fn
+
+        error = 0.75 * (fp/total_pos) + 0.25 * (fn/total_neg)
+        profit = prediction_stats_df['AvgGainEXp']
+        profit_with_buy_th = prediction_stats_df_with_th['AvgGainEXp']
+        raw_profit = profit
+        opt_profit = prediction_stats_df['AvgGainEXp_Opt']
+
+        print("current params: ")
+        print(curr_params)
+        print("curr profit is: " + str(prediction_stats_df['AvgGainEXp']))
+        print("curr profit with th is: " + str(prediction_stats_df_with_th['AvgGainEXp']))
+        #print("y_pred: ")
+        #print(y_pred[0:5])
+        #print("y_test: ")
+        #print(y_test[0:5])
+
+        if error < best_error:
+            best_params = curr_params
+            best_error = error
+
+        if profit_with_buy_th > best_profit_with_buy_th:
+            best_params_slope = curr_params
+            best_error_slope = profit_with_buy_th
+
+        if profit > best_profit:
+            best_params_profit = curr_params
+            best_profit = profit
+
+        #if tp_ratio/best_tp_ratio:
+
+        df_err_summary = prediction_stats_df #pd.DataFrame()
+        df_err_summary['parameters'] = curr_params
+        df_err_summary['error'] = error
+        df_err_summary['profit_with_th'] = profit_with_buy_th
+        df_err_summary['profit'] = profit
+
+        df_y_pred_vs_test = pd.DataFrame()
+        df_y_pred_vs_test['y_pred'] = y_pred
+
+        if (y_test.ndim > 2 or (y_test.shape[-1] > 1)):
+            y_test = y_test.reshape(y_test.shape[0],-1)
+            y_test_0 = y_test[:,0]
+            y_test_1 = y_test[:,-1] #take the last day fron the sequence
+
+        df_y_pred_vs_test['y_test 0'] = y_test_0
+        df_y_pred_vs_test['y_test 1'] = y_test_1
+
+        best_profit_with_buy_th_list.append(profit_with_buy_th)
+        error_list.append(error)
+        profit_list.append(profit)
+        raw_profit_list.append(raw_profit)
+        opt_profit_list.append(opt_profit)
+        df_err_summary_list.append(df_err_summary)
+        df_y_pred_vs_test_list.append(df_y_pred_vs_test)
+        epoch_losses_list.append(total_epoch_loss)
+        i = i + 1
+
+    params_tune_list = range(len(params_list)) #model_params.learning_rate
+    fig = plt.figure()
+    ax1 = fig.add_subplot(2,1,1)
+    ax2 = fig.add_subplot(2,1,2)
+
+    ax1.plot(raw_profit_list)
+    ax2.plot(opt_profit_list,color='g' , label = 'Maximum gain graph')
+
+    ax1.set_title(' balance over time for RNN tuning, as function of params ')
+    ax1.set_xlabel('params tuning')
+    ax1.set_ylabel('balance')
+
+    fig.savefig('balance over time for RNN tuning, as function of params  ' + '.png')
+
+    print("Tuning is done! ")
+    print("best params,profit after tuning: ")
+    print(best_params_profit,best_profit)
+
+    df_epoch_losses_list = pd.DataFrame(epoch_losses_list)
+
+    my_best_params = best_params_profit
+    excel_path = r"tune_results_" + str(curr_model) + str(general_params.tune_count) + ".xlsx"
+    df_excel_summary = pd.DataFrame(columns=['features list','periods '])
+    df_excel_summary['features list'] = general_params.feature_list
+    df_excel_summary['periods ']  = general_params.tune_periods
+    writer = ExcelWriter(excel_path)
+    i = 0
+    for df_err_summary in df_err_summary_list:
+        if (i==0):
+            df_err_summary.to_excel(writer, startrow=1,
+                                            startcol=i, index = True)
+            i = i + 2
+        else:
+            df_err_summary.to_excel(writer, startrow=1,
+                                            startcol=i, index = False)
+            i = i + 1 #df_err_summary.shape[1] #next col will start after this one
+
+    df_excel_summary.to_excel(writer, startrow=20,startcol=0)
+    df_epoch_losses_list.to_excel(writer,sheet_name='losses',startrow=0,startcol=0)
+    i = 0
+    for df_y_pred_vs_test in df_y_pred_vs_test_list:
+        if (i==0):
+            df_y_pred_vs_test.to_excel(writer,sheet_name='y_test_results', startrow=0,
+                                        startcol=i, index = True)
+            i = i + 3
+        else:
+            df_y_pred_vs_test.to_excel(writer,sheet_name='y_test_results', startrow=0,
+                                        startcol=i, index = False)
+            i = i + 3
+
+
+    writer.save()
+    writer.close()
+
+    path_score = general_params.tune_path_score #'lstm tuning results list' + time.strftime("%m%d%y")
+    SaveLoadObject.save_obj(df_err_summary_list,path_score)
+
+    my_best_params = best_params_profit
+    return my_best_params
+
+def TuneDualLSTM(classifier,X, y_history, y,x_test,y_test, input_size, arguments,real_close_value,general_params,clf_type, cv=5,curr_stock = 'na'):
+    curr_date = time.strftime("%m%d%y")
+    grid = ParameterGrid(arguments.__dict__)
+    params_list = []
+    y_pred_list = []
+    y_test_list = []
+    clf_list = []
+
+    total_params = len(grid)
+    p = 0
+
+    for params in grid:
+        PATH = 'lstmTrainedModelTune_' + str(p) + '_' + curr_date
+        classifier.__init__(input_size,**params)
+        p = p+1
+
+        print("parameters iter in GridSearch is: " + str(p) + " out of: " + str(total_params))
+        print(params)
+
+        clf_curr = classifier
+
+        X_train,y_train_history,y_train,X_test,y_test = X, y_history, y,x_test,y_test
+        total_epoch_loss,decoder_optimizer,encoder_optimizer = clf_curr.Train(X_train,y_train_history,y_train,X_test,y_test,plot_results = False,curr_stock = curr_stock)
+
+        torch.save({
+            'model_state_dict': clf_curr.state_dict(),
+            'decoder_optimizer_state_dict': decoder_optimizer.state_dict(),
+            'encoder_optimizer_state_dict': encoder_optimizer.state_dict(),
+            }, PATH)
+
+        clf_curr.eval()
+        y_pred = np.array(clf_curr.Predict(X_test,y_test))
+
+        params_list.append(params)
+        y_pred_list.append(y_pred)
+        y_test_list.append(y_test)
+        clf_list.append(clf_curr.state_dict())
+
+        file_path = 'trained classifier: ' + str(p)
+        torch.save(clf_curr.state_dict(), file_path)
+
+        #print(clf_list)
+        path_clf    = general_params.tune_path_clf# 'lstm trained classifiers list' + curr_date
+        path_params = general_params.tune_path_params #'lstm tuning parameters list' + curr_date
+
+        SaveLoadObject.save_obj(clf_list,path_clf)
+        SaveLoadObject.save_obj(params_list,path_params)
+
+    my_best_params  =  TuneClassifiers(real_close_value,y_test_list,y_pred_list,params_list,general_params,clf_type,'lstm',total_epoch_loss)
+
+    return my_best_params
 
 def TuneSimpleRNN(model_params,clf_type,general_params,real_close_value,X,y,x_test,y_test,file_path, cv=2):
 
     #kf = KFold(n_splits=cv)
 
     grid = ParameterGrid(model_params.__dict__)
-    best_error = np.inf
-    best_error_slope = np.inf
-    best_profit = 0
-
-    error_slope_list = []
-    error_list = []
-    profit_list = []
-    raw_profit_list = []
-    opt_profit_list = []
-    params_list = []
-
-  #X_df = pd.DataFrame(X)
-  #y_df = pd.DataFrame(y)
     total_params = len(grid)
     p = 0
 
     for params in grid:
         logging.error("parameters iter in RNN GridSearch is: " + str(p) + " out of: " + str(total_params))
         p = p+1
-        profit = 0
-        raw_profit = 0
-        opt_profit = 0
-        error = 0
-        error_slope = 0
+        params_list = []
+        y_pred_list = []
+        y_test_list = []
+
         params = objectview(params)
         ok = True
         if (ok==True):
@@ -168,94 +354,43 @@ def TuneSimpleRNN(model_params,clf_type,general_params,real_close_value,X,y,x_te
             input_seq_len = X_train.shape[2]
             output_size = y_train.shape[1]
 
-            SimpleRNN.Train(input_size,input_seq_len,clf_type, params.hidden_layer_size, output_size,train_loader,file_path,params.learning_rate,params.num_epochs)
+            total_epoch_loss = SimpleRNN.Train(input_size,input_seq_len,clf_type, params.hidden_layer_size, output_size,train_loader,file_path,params.learning_rate,params.num_epochs,params.optimizer_eps,params.optimizer_amsgrad)
 
             test_dataset = CreateDataset(X_test,y_test)
             test_loader = DataLoader(dataset=test_dataset, batch_size=params.batch_size, shuffle=False, num_workers=0)
-            loss_fn = GeneralModelFn.loss_fn if clf_type=='reg' else GeneralModelFn.loss_multi_label_fn
+            loss_fn = GeneralModelFn.loss_fn_cross_entropy # if clf_type=='reg' else GeneralModelFn.loss_multi_label_fn
             metrics = GeneralModelFn.metrics
             model = RnnSimpleModel(input_size = input_size,input_seq_len=input_seq_len, rnn_hidden_size = params.hidden_layer_size, output_size = output_size)
 
             y_pred, evaluation_summary = SimpleRNN.Predict(model,loss_fn,test_loader, metrics, cuda = False)
             #print(evaluation_summary)
 
-            prediction_stats_df = CalcSt(real_close_value,y_test,y_pred,clf_type,plot_buy_decisions = False,curr_model = 'rnn').loc[0]
-
-            print(params)
-            print("curr profit is: " + str(prediction_stats_df['AvgGainEXp']))
-            print("curr tp is: " + str(prediction_stats_df['true_positive_ratio']))
-            print("curr tn is: " + str(prediction_stats_df['true_negative_ratio']))
-            print("curr fp is: " + str(prediction_stats_df['false_positive_ratio']))
-            print("curr fn is: " + str(prediction_stats_df['false_negative_ratio']))
-
-        if error < best_error:
-            best_params = params
-            best_error = error
-
-        if error_slope < best_error_slope:
-            best_params_slope = params
-            best_error_slope = error_slope
-
-        if profit > best_profit:
-            best_params_profit = params
-            best_profit = profit
-
-        error_slope_list.append(error_slope)
-        error_list.append(error)
-        profit_list.append(profit)
-        raw_profit_list.append(raw_profit)
-        opt_profit_list.append(opt_profit)
         params_list.append(params)
+        y_pred_list.append(y_pred)
+        y_test_list.append(y_test)
 
-    df_err_summary = prediction_stats_df #pd.DataFrame()
-    df_err_summary['parameters'] = params_list
-    df_err_summary['error'] = error_list
-    df_err_summary['slope_error'] = error_slope_list
-    df_err_summary['profit'] = profit_list
+    my_best_params  =  TuneClassifiers(real_close_value,y_test_list,y_pred_list,params_list,general_params,clf_type,'rnn',total_epoch_loss)
 
-    params_tune_list = range(len(params_list)) #model_params.learning_rate
-    fig = plt.figure()
-    ax1 = fig.add_subplot(2,1,1)
-    ax2 = fig.add_subplot(2,1,2)
-
-    ax1.plot(raw_profit_list)
-    ax2.plot(opt_profit_list,color='g' , label = 'Maximum gain graph')
-
-    ax1.set_title(' balance over time for RNN tuning, as function of params ')
-    ax1.set_xlabel('params tuning')
-    ax1.set_ylabel('balance')
-
-    fig.savefig('balance over time for RNN tuning, as function of params  ' + '.png')
-
-    return best_params,best_params_slope,best_params_profit,df_err_summary
+    return my_best_params
 
 def TrainSimpleRNN(x_train,y_train,x_test,y_test,model_params,clf_type,file_path,general_params,real_close_value):
+    print("parameters run:")
+    print(model_params.__dict__)
 
     if (general_params.tune_needed == True):
         logging.info("starts tuning parameters RNN.....")
-        best_params,best_params_slope,best_params_profit,df_err_summary = TuneSimpleRNN(model_params,clf_type,general_params,real_close_value,x_train, y_train,x_test,y_test,file_path, cv=2)
-        my_best_params = best_params_profit
-        excel_path = r"rnn_tune_results" + str(general_params.tune_count) + ".xlsx"
-        df_excel_summary = pd.DataFrame(columns=['features list','periods '])
-        df_excel_summary['features list'] = general_params.feature_list
-        df_excel_summary['periods ']  = general_params.num_of_periods
-        writer = ExcelWriter(excel_path)
-        df_err_summary.to_excel(writer, startrow=0,startcol=0)
-        df_excel_summary.to_excel(writer, startrow=0,startcol=7)
-        writer.save()
-        writer.close()
-
+        my_best_params = TuneSimpleRNN(model_params,clf_type,general_params,real_close_value,x_train, y_train,x_test,y_test,file_path, cv=2)
     else:
         my_best_params = model_params
-
-    train_dataset = CreateDataset(x_train,y_train)
-    train_loader = DataLoader(dataset=train_dataset, batch_size=my_best_params.batch_size, shuffle=False, num_workers=0)
 
     input_size    = x_train.shape[1]
     input_seq_len = x_train.shape[2]
     output_size = y_train.shape[1]
 
-    total_epoch_loss = SimpleRNN.Train(input_size,input_seq_len,clf_type,my_best_params.hidden_layer_size, output_size,train_loader,file_path,my_best_params.learning_rate,my_best_params.num_epochs)
+    train_dataset = CreateDataset(x_train,y_train)
+    train_loader = DataLoader(dataset=train_dataset, batch_size=my_best_params.batch_size, shuffle=False, num_workers=0)
+
+    total_epoch_loss = SimpleRNN.Train(input_size,input_seq_len,clf_type,my_best_params.hidden_layer_size, output_size,train_loader,file_path,my_best_params.learning_rate,my_best_params.num_epochs,my_best_params.optimizer_eps,my_best_params.optimizer_amsgrad)
 
     fig = plt.figure()
     ax1 = fig.add_subplot(2,1,1)
@@ -286,10 +421,14 @@ def PredictSimpleRNN(x_test,y_test,clf_type,model_params,use_cuda,file_path):
     except:
         print("error!! didn't find trained model")
 
-    loss_fn = GeneralModelFn.loss_fn if clf_type=='reg' else GeneralModelFn.loss_multi_label_fn
+    loss_fn = GeneralModelFn.loss_fn_cross_entropy ##GeneralModelFn.loss_fn if clf_type=='reg' else GeneralModelFn.loss_multi_label_fn
     metrics = GeneralModelFn.metrics
 
     labels_prediction_total, evaluation_summary = SimpleRNN.Predict(model,loss_fn,test_loader, metrics, cuda = use_cuda)
+
+    pickle_prediction_data = [labels_prediction_total,y_test]
+    with open('StockDataFromWeb_list.pickle', 'wb') as handle:
+        pickle.dump(pickle_prediction_data, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
     fig = plt.figure()
     ax1 = fig.add_subplot(2,1,1)
@@ -299,44 +438,29 @@ def PredictSimpleRNN(x_test,y_test,clf_type,model_params,use_cuda,file_path):
 
     return (labels_prediction_total)
 
-def TrainPredictDualLSTM(x_train,y_history,y_train,x_test,y_test,model_params,file_path,general_params):
+def TrainPredictDualLSTM(x_train,y_history,y_train,x_test,y_test,model_params,file_path,general_params,real_close_value,clf_type):
     logging.info("hello from TrainPredictDualLSTM")
     print("hello from TrainPredictDualLSTM")
 
+    input_size = x_train.shape[2]
+
     if (general_params.tune_needed == True):
         logging.info("starts tuning parameters.....")
-        DualLSTM_clf_tune = Dual_Lstm_Attn.da_rnn(input_size = x_train.shape[1])
+        DualLSTM_clf_tune = Dual_Lstm_Attn.da_rnn(input_size = input_size)
 
         logging.debug("x_train shape: ")
         logging.debug(x_train.shape)
-        my_best_params_mse_error,my_best_params_slope, my_best_params_profit,df_err_summary = Dual_Lstm_Attn.tune(
+        my_best_params = TuneDualLSTM(
                                                                                     DualLSTM_clf_tune,
                                                                                     x_train,y_history,
-                                                                                    y_train,x_test,y_test,input_size = 1,
-                                                                                    arguments=model_params.__dict__,
-                                                                                    curr_stock = general_params.stock_name,
-                                                                                    cv=2)
-        writer = ExcelWriter(r"LSTM_tune_results.xlsx")
-        df_err_summary.to_excel(writer, startrow=0,startcol=0)
-        writer.save()
-        writer.close()
-
-        my_best_params = my_best_params_profit
-        logging.info("summary profit for all parameters")
-        logging.info (df_err_summary['profit'])
-
-        logging.info("summary mse error for all parameters")
-        logging.info (df_err_summary['error'])
-
-        logging.info("summary momentum for all parameters")
-        logging.info (df_err_summary['slope_error'])
-
-        logging.info ("best parameters for profit")
-        logging.info (my_best_params_profit)
-        logging.info ("best parameters for mse error")
-        logging.info (my_best_params)
-        logging.info ("best parameters for slope")
-        logging.info (my_best_params_slope)
+                                                                                    y_train,x_test,y_test,input_size = input_size,
+                                                                                    arguments=model_params,
+                                                                                    real_close_value = real_close_value,
+                                                                                    general_params = general_params,
+                                                                                    clf_type = clf_type,
+                                                                                    cv=2,
+                                                                                    curr_stock = general_params.stock_name
+                                                                                    )
 
 
         with open('lstmDual_bestParams.pickle', 'wb') as output_file:
@@ -350,8 +474,9 @@ def TrainPredictDualLSTM(x_train,y_history,y_train,x_test,y_test,model_params,fi
 
 
     logging.info("starts training: Dual_Lstm_Attn.da_rnn")
-    input_size = 1
 
+    print(input_size)
+    print(my_best_params)
     clf_DualLSTM = Dual_Lstm_Attn.da_rnn(input_size = input_size)
     clf_DualLSTM.__init__(input_size,**my_best_params)
 
@@ -360,26 +485,38 @@ def TrainPredictDualLSTM(x_train,y_history,y_train,x_test,y_test,model_params,fi
     logging.debug(x_train.shape)
     logging.debug(y_train.shape)
 
-    x_train   = pd.DataFrame(x_train)
-    y_history = pd.DataFrame(y_history)
+   # x_train   = pd.DataFrame(x_train)
+   # y_history = pd.DataFrame(y_history)
     if (general_params.only_train==False):
         plot_results = True
-        x_test    = pd.DataFrame(x_test)
+        #x_test    = pd.DataFrame(x_test)
     else:
         plot_results = False
 
+    curr_date = time.strftime("%m%d%y")
+    PATH      = 'lstmTrainedModelTune_' + str(general_params.tune_count) + '_' + curr_date
+    LOAD_PATH = 'lstmTrainedModelTune_' + str(general_params.tune_count) + '_' + curr_date
     if (general_params.train_needed == True):
-        clf_DualLSTM.Train(x_train,y_history,y_train, x_test,y_test,plot_results=plot_results,curr_stock = general_params.stock_name)
+        train_losses_list,decoder_optimizer,encoder_optimizer= clf_DualLSTM.Train(x_train,y_history,y_train, x_test,y_test,plot_results=plot_results,curr_stock = general_params.stock_name)
         if (general_params.SaveTrainedModel==True):
-                torch.save(clf_DualLSTM.state_dict(), file_path)
+            torch.save({
+            'model_state_dict': clf_DualLSTM.state_dict(),
+            'decoder_optimizer_state_dict': decoder_optimizer.state_dict(),
+            'encoder_optimizer_state_dict': encoder_optimizer.state_dict(),
+            }, PATH)
+
+        SaveLoadObject.save_obj(clf_DualLSTM.state_dict(),PATH)
+
     else:
         try:
-            clf_DualLSTM.load_state_dict(torch.load(file_path))
+            checkpoint = torch.load(LOAD_PATH)
+            clf_DualLSTM.load_state_dict(checkpoint['model_state_dict'])
         except:
             print("error!! didn't find trained model")
 
     if (general_params.only_train==False):
-        logging.info("hello from PredictDualLSTM")
+        print("hello from PredictDualLSTM")
+        clf_DualLSTM.eval()
         y_pred = clf_DualLSTM.Predict(x_test,y_test)
         logging.debug(y_test.shape)
         logging.debug(y_pred.shape)
@@ -413,6 +550,16 @@ def TrainPredictRandForest(x_train,y_train,x_test,y_test,clf_type,model_params,f
     from sklearn import utils
     from sklearn import preprocessing
 
+    if (x_train.ndim > 2):
+        x_train = x_train.reshape(x_train.shape[0],-1)
+        x_test  = x_test.reshape(x_test.shape[0],-1)
+        y_train = y_train.reshape(y_train.shape[0],-1)
+        y_test = y_test.reshape(y_test.shape[0],-1)
+
+    print(x_train.shape)
+    print(x_test.shape)
+    print(y_train.shape)
+
     print("hello from TrainPredictRandForest")
     plot_train_x_y = False
     if (plot_train_x_y == True):
@@ -426,8 +573,8 @@ def TrainPredictRandForest(x_train,y_train,x_test,y_test,clf_type,model_params,f
     #my_best_params = model_params
     #WRF_best = WRF(n_trees = my_best_params['n_trees'], max_depth=my_best_params['max_depth'], n_features=my_best_params['n_features'], weight_type=my_best_params['weight_type'], type="cat")
     #WRF_best = WRF(**gcv.best_params_)
-
-    RFC_classifier = RandomForestClassifier() if clf_type=='cat' else RandomForestRegressor()
+    clf_cat = clf_type=='cat'
+    RFC_classifier = RandomForestClassifier() if clf_cat==True else RandomForestRegressor()
 
     if (general_param.tune_needed == True):
         GS = GridSearchCV(estimator=RFC_classifier,param_grid=model_params.__dict__, cv=5)
@@ -454,7 +601,7 @@ def TrainPredictRandForest(x_train,y_train,x_test,y_test,clf_type,model_params,f
 
     print("starts predicting RFC best...")
     print(clf_type)
-    if clf_type=='cat':
+    if clf_cat==True:
         y_pred_confidence = RFC_best.predict_proba(x_test)
 
         plt_rfc_res = False
@@ -516,12 +663,12 @@ def GetPredictionSummary(curr_config,general_config,curr_model,target_type,real_
         real_values_adj = real_value
         pred_values_adj = predictad_value
 
-    prediction_stats_df = CalcSt(real_close_value,real_values_adj,pred_values_adj,target_type,plot_buy_decisions = True,curr_model = curr_model).loc[0]
+    prediction_stats_df = CalcSt(real_close_value,real_values_adj,pred_values_adj,target_type,buy_vector = None,plot_buy_decisions = True,curr_model = curr_model).loc[0]
     #print(prediction_stats_df)
 
     buy_decision_summary = pd.DataFrame(columns=['close_values','predicted_price','buy_decision','real_buy_decision'])
 
-    if (real_value.shape[-1] > 1):
+    if (real_value.ndim > 2 or (real_value.shape[-1] > 1)):
         real_value = real_value.reshape(real_value.shape[0],-1)
         real_value = real_value[:,-1]
 
@@ -609,8 +756,10 @@ def RunNetworkArch(df,df_branch, model_params):
     if model_params.network_model==NetworkModel.simpleRNN:
         RNN_config = model_params.RNN_HyperParameters['ModelParams']
         data_params = model_params.RNN_HyperParameters['GeneralParams']
-        rnn_clf_type = 'cat' if (data_params.prediction_method==PredictionMethod.MultiClass) else 'reg'
-
+        rnn_clf_type = data_params.prediction_method #'cat' if (data_params.prediction_method==PredictionMethod.MultiClass) else 'reg'
+        if (model_params.tune_extra_model_needed):
+            data_params.num_of_periods = model_params.tune_periods
+            data_params.normalization_method = model_params.tune_normalization
         Data  = ConstructTestData(df, data_params,test_train_split,model_params.train_data_precentage)
         x_train,y_history,y_train,x_test,y_test = GetDataVal(Data,only_train=model_params.only_train)
         real_close_value = df['close'].tail(x_test.shape[0]).tolist()
@@ -649,11 +798,14 @@ def RunNetworkArch(df,df_branch, model_params):
     elif model_params.network_model==NetworkModel.DualLstmAttn:
         DualLstm_config = model_params.LSTM_HyperParameters['ModelParams']
         data_params = model_params.LSTM_HyperParameters['GeneralParams']
-        lstm_clf_type = 'cat' if (data_params.prediction_method==PredictionMethod.MultiClass) else 'reg'
+        lstm_clf_type = data_params.prediction_method #'cat' if (data_params.prediction_method==PredictionMethod.MultiClass) else 'reg'
         Data  = ConstructTestData(df, data_params,test_train_split,model_params.train_data_precentage)
         x_train,y_history,y_train,x_test,y_test = GetDataVal(Data, model_params.only_train)
         real_close_value = df['close'].tail(x_test.shape[0]).tolist()
-        y_pred, best_config = TrainPredictDualLSTM(x_train,y_history,y_train,x_test,y_test,DualLstm_config,DualLSTM_file_path,model_params)
+        y_pred, best_config = TrainPredictDualLSTM(x_train,y_history,y_train
+                                                   ,x_test,y_test,DualLstm_config,
+                                                   DualLSTM_file_path,model_params,
+                                                   real_close_value,lstm_clf_type)
 
         prediction_stats_df,buy_decision_summary_df = \
         GetPredictionSummary(data_params,model_params,'LSTM',data_params.prediction_method,real_close_value,y_test,y_pred)
@@ -729,3 +881,35 @@ def RunNetworkArch(df,df_branch, model_params):
         }
 
     return y_test.flatten(),y_pred.flatten(),buy_vector_confidence,best_config,prediction_summary
+
+def TuneMyLstmModel(Curr_df,model_params):
+    '''
+    1. saves all trained models
+    2. save error measure for all
+    3. returns best error + config
+    '''
+    DualLSTM_file_path      = 'my_DualLSTM_model.model'
+    best_config = model_params.LSTM_HyperParameters
+    DualLstm_config = model_params.LSTM_HyperParameters['ModelParams']
+    data_params = model_params.LSTM_HyperParameters['GeneralParams']
+    lstm_clf_type = data_params.prediction_method
+    test_train_split = False if model_params.only_train else True
+    Data  = ConstructTestData(Curr_df, data_params,test_train_split,model_params.train_data_precentage)
+    x_train,y_history,y_train,x_test,y_test = GetDataVal(Data, model_params.only_train)
+    DualLstm_config.features_num = x_train.shape[1]
+    real_close_value = Curr_df['close'].tail(x_test.shape[0]).tolist()
+    y_pred, best_config = TrainPredictDualLSTM(x_train,y_history,y_train
+                                                ,x_test,y_test,DualLstm_config,
+                                                DualLSTM_file_path,model_params,
+                                                real_close_value,lstm_clf_type)
+
+    stats_summary_df,lstm_buy_decision_summary_df = \
+    GetPredictionSummary(data_params,model_params,'LSTM',data_params.prediction_method,real_close_value,y_test,y_pred)
+
+    buy_decision_summary_df = pd.DataFrame(columns=[model_params.stock_name])
+    buy_decision_summary_df = buy_decision_summary_df.append(lstm_buy_decision_summary_df, ignore_index=True)
+
+    #SaveLoadObject.save_obj(clf_list,path_clf)
+    #SaveLoadObject.save_obj(params_list,path_params)
+
+    return best_config, stats_summary_df,buy_decision_summary_df

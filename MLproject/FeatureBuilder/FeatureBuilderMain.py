@@ -15,6 +15,8 @@ import operator
 import pandas_datareader.nasdaq_trader
 from pandas_datareader.nasdaq_trader import get_nasdaq_symbols
 import pandas_datareader.data as web
+from pandas_datareader._utils import RemoteDataError
+
 from pandas.tests.io.parser import na_values
 from pandas import ExcelWriter
 from sklearn import preprocessing
@@ -44,8 +46,7 @@ class FeatureBuilder():
         self.start_date = dates_range[0]
         self.end_date   = dates_range[-1]
 
-def ImportStockFromWeb(stocks_list,dates_range,time_granularity):
-    remove_relative_stock = True
+def ImportStockFromWeb(stocks_list,dates_range,remove_relative_stock = True):
 
     start_date = dates_range[0]
     end_date   = dates_range[-1]
@@ -57,11 +58,12 @@ def ImportStockFromWeb(stocks_list,dates_range,time_granularity):
             import_data_old = pickle.load(handle)
     except:
         import_data_old = [1,2]
-    ok = False
-    #if (ok==True):
-    if (np.array_equal(import_data_old,import_data_old)):
-        my_df = pd.read_excel(io = r'StockDataFromWeb.xlsx')
-    else:
+    ok = True
+    if (ok==True):
+    #if (np.array_equal(import_data_old,import_data_old)):
+    #    print("data to get is already saved")
+    #    my_df = pd.read_excel(io = r'StockDataFromWeb.xlsx')
+    #else:
         #building an empty data frams
         my_df = pd.DataFrame(index=dates_range)
 
@@ -69,13 +71,17 @@ def ImportStockFromWeb(stocks_list,dates_range,time_granularity):
         ReferenceStock = web.DataReader('SPY', 'iex', start_date, end_date) #iex
 
         my_df = my_df.join(ReferenceStock['close'],how='inner')
+        my_df = my_df.join(ReferenceStock['open'],how='inner')
         my_df = my_df.rename(columns={'close': 'close_SPY'})
+        my_df = my_df.rename(columns={'open': 'open_SPY'})
 
         df_temp = web.DataReader(stocks_list, 'iex', start_date, end_date) #yahoo iex
         my_df   = my_df.join(df_temp)
+        #print(df_temp.head())
 
         if (remove_relative_stock):
             del my_df['close_SPY']
+            del my_df['open_SPY']
 
         with open('StockDataFromWeb_list.pickle', 'wb') as handle:
             pickle.dump(import_data, handle, protocol=pickle.HIGHEST_PROTOCOL)
@@ -95,7 +101,10 @@ def CalcFeatures(CurrStockDataFrame, feature_list,stock_name):
         GoGTrends_DF = GoGTrends_DF.set_index(GoGTrends_DF['date'])
         #print(GoGTrends_DF.columns)
         GoGTrends_DF = GoGTrends_DF.drop(['Close','Open'],axis=1)
+        #print(GoGTrends_DF.columns.values)
         FullFeaturesDF = FullFeaturesDF.join(GoGTrends_DF).drop(['date'],axis=1)
+        FullFeaturesDF = FullFeaturesDF.add_prefix('GoogTrend_')
+        #print(FullFeaturesDF.columns.values)
         FullFeaturesDF = FullFeaturesDF/100 #change to df
 
         #print(FullFeaturesDF.head())
@@ -152,7 +161,7 @@ def FeatureBuilderMain(stocks_list, feature_list, dates_range,time_granularity):
         logging.error("****************** FeatureBuilderMain : " + str(stock) + "*******************")
 
         #getting stock data of several stocks together, should be more efficient
-        CurrStockDataFrame = ImportStockFromWeb(stock,dates_range,time_granularity)
+        CurrStockDataFrame = ImportStockFromWeb(stock,dates_range)
         CurrFeaturesDF     = CalcFeatures(CurrStockDataFrame,feature_list,stock_name = stock)
         AllStocksDfList.append(CurrFeaturesDF)
 

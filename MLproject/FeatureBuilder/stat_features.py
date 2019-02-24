@@ -10,11 +10,15 @@ import matplotlib
 from matplotlib import pyplot as plt
 
 import pandas_datareader.data as web
+from pandas_datareader._utils import RemoteDataError
+
 import datetime
 from datetime import datetime
 
 import pandas_datareader.nasdaq_trader
 from pandas_datareader.nasdaq_trader import get_nasdaq_symbols
+
+from FeatureBuilder import FeatureBuilderMain
 
 import os
 import time #help us to measure operations time
@@ -25,6 +29,7 @@ from pandas.tests.io.parser import na_values
 
 import scipy.optimize as spo
 from blaze.expr.expressions import shape
+#from builtins import True
 
 
 ################NOT USED CURRENTLY####################
@@ -113,13 +118,17 @@ def compute_momentum(df,window):
     df_momentum = (df/df_momentum.shift(window)) - 1
     return df_momentum
 
-def compute_daily_returns(df,plot_graphs):
-    df_daily_return = df.copy() #copy gives DataFrame to match size and culomn names
-   # df_daily_return[1:] = (df.ix[1:,:]/df.ix[:-1,:].values) - 1 #using .values to access the underline numpy array. o.w panadas will try to match each row based on index when performing element wise operation
-    df_daily_return = (df/df_daily_return.shift(1)) - 1 #much easier using pandas then the slicing above
-  #  print("df_daily_return: ", df_daily_return)
-  #  df_daily_return.ix[0,:] = 0 #set daily returns for row 0 to 0 (can't be calculated) - o.w pandas leave it with nan values
+def compute_daily_returns(df_close,df_open = None,same_day = False,plot_graphs = False):
+    df_daily = df_close.copy() #copy gives DataFrame to match size and culomn names
+    df_daily_close = df_close.copy()
 
+   # df_daily_return[1:] = (df.ix[1:,:]/df.ix[:-1,:].values) - 1 #using .values to access the underline numpy array. o.w panadas will try to match each row based on index when performing element wise operation
+    if (same_day==False or df_open==None):
+        df_daily_return = (df_close/df_daily.shift(1)) - 1 #much easier using pandas then the slicing above
+    else:
+        df_daily_open  = df_open.copy()
+        df_daily_return = pd.np.divide(df_daily_close,df_daily_open) - 1
+  #  df_daily_return.ix[0,:] = 0 #set daily returns for row 0 to 0 (can't be calculated) - o.w pandas leave it with nan values
   #  corr = df.corr(method='pearson')
 
     if (plot_graphs == True):
@@ -174,22 +183,84 @@ def objective_SR_function(x, args,use_normalize = True):
     SR_daily  =  np.sqrt(sf) * SR_annual
     return -SR_daily #we want maximum of SR
 
-def GetAssessReturn(stocks_df):
-    stocks_df_adj
-    stocks_df = \
-    returnsClosePrevRaw1.dropna(axis=1)
+def GetAssessReturn(dates_range,stocks_list):
+    load_all_stocks = False
+
+    if (load_all_stocks == True):
+        sp500_url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
+        data_table = pd.read_html(sp500_url)
+        tickers = pd.DataFrame()
+        tickers['Symbol'] = data_table[0][0:][1]
+        snp_symbols_list = tickers['Symbol'].tolist()[1:]
+        stocks_list.extend(snp_symbols_list)
+
+        stocks_df = []
+        #df_temp = pd.DataFrame()
+        for stock in stocks_list:
+            try:
+                df_temp = web.DataReader(stock, 'iex', start_date, end_date) #yahoo iex
+                df_list.append(df_temp['close'])
+                print(df_temp.head)
+                print(df_list)
+            except RemoteDataError:
+                print("No information for ticker '%s'" % stock)
+                continue
+
+        print(stocks_df.head)
+        num_days = 260*5  # Take 5 years
+        num_stocks = 200  # Try for 200 stocks but we will get many less due to NaNs
+
+        stocks_df['returnsClosePrevRaw1'] = compute_daily_returns(stocks_df)
+        print(stocks_df.head)
+    else:
+        snp500 = pd.read_csv("C:\eclipse_projects\MLproject\snp500stocks.csv")
+        tickers = pd.DataFrame()
+        snp_symbols_data= snp500['Symbol']
+        print(snp_symbols_data)
+
+    returnsClosePrevRaw1 = (
+    stocks_df['returnsClosePrevRaw1'].
+    swaplevel().
+    unstack()
+    )
+
+    print(returnsClosePrevRaw1)
+
+    returnsClosePrevRaw1 = \
+    returnsClosePrevRaw1.iloc[-num_days:, 0:num_stocks].dropna(axis=1)
     num_stocks = len(returnsClosePrevRaw1.columns)
     print(num_stocks)
 
+    from sklearn.decomposition import PCA
+    pca = PCA(n_components=15, svd_solver='full')
+    pca.fit(returnsClosePrevRaw1)
 
-    return 0
+    plt.bar(range(15),pca.explained_variance_ratio_);
+    plt.title('Principal Components Sorted by Variance Explain');
+    plt.ylabel('% of Total Variance Explained');
+    plt.xlabel('PC factor number');
+
+    pcs = pca.transform(returnsClosePrevRaw1)
+    # the market return is the first PC
+    mkt_return = pcs[:,0].reshape(num_days,1)
+    # the betas of each stock to the market return are in
+    # the first column of the components
+    mkt_beta = pca.components_[0,:].reshape(num_stocks,1)
+
+    # the market portion of returns is the projection of one onto the other
+    mkt_portion = mkt_beta.dot(mkt_return.T).T
+
+    actual_stock_return = returnsClosePrevRaw1 - mkt_portion
+    return actual_stock_return
+
+
 def constraint1_Sum(x):
     sum_abs = 1
     x_sum = x.sum()
     return (sum_abs - x_sum)
 
 #TODO - can go to the DECIDER
-
+#we want some high volatility and some low
 def OptimizePortfolioBySR(sd,ed,symbols,gen_plot=False):
     #optimize portfolio by sharp ratio
     #f(x)= -sharp_ratio, while x is multi dim, so each dim is an allocation to each of the stocks
@@ -271,7 +342,7 @@ def AssessPortfolio(sd,ed,symbols,allocs,sv,rfr,sf=252.0,gen_plot=False):
     print("std of daily return: ", sddr)
     print("SR_daily: ", SR_daily)
 
-    return
+    return cr,adr,sddr,SR_daily
 
 
 #CurrStockDataFrame = ConstructDfFeature(dates,stock_list,feature_list)
